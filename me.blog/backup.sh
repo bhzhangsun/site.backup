@@ -1,7 +1,7 @@
 #!/bin/bash
 # ================================================================
-# Ghost 完整备份脚本 (需 root 权限)
-# 功能：备份 content、数据库、配置、凭证、Nginx 配置，推送到 Git
+# Ghost 完整备份脚本 (打包为一个归档文件)
+# 功能：备份所有数据 -> 打包为单个 tar.gz -> 提交到 Git
 # 用法：sudo bash backup.sh [--keep-days <天数>]
 # ================================================================
 
@@ -10,13 +10,14 @@ set -e
 # ---------- 配置区 ----------
 GHOST_DIR="/var/www/ghost"
 BACKUP_BASE="/data"
-REPO_DIR="$BACKUP_BASE/site.backup"            # 克隆后的仓库目录
-BACKUP_SUBDIR="site.me"                         # 备份文件存放的子目录
+REPO_DIR="$BACKUP_BASE/site.backup"
+BACKUP_SUBDIR="me.blog"
 GIT_REMOTE="git@github.com:bhzhangsun/site.backup.git"
 GIT_BRANCH="main"
 KEEP_DAYS=7
 
 LOG_FILE="/var/log/ghost-backup.log"
+TEMP_DIR="/tmp/ghost-backup-temp"          # 临时工作目录
 
 # ---------- 颜色与日志 ----------
 GREEN='\033[0;32m'
@@ -27,7 +28,6 @@ info() { echo -e "${GREEN}[INFO]${NC} $1" | tee -a "$LOG_FILE"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1" | tee -a "$LOG_FILE"; }
 error() { echo -e "${RED}[ERROR]${NC} $1" | tee -a "$LOG_FILE"; exit 1; }
 
-# ---------- 检查运行权限 ----------
 if [ "$EUID" -ne 0 ]; then
     error "请使用 root 权限运行此脚本 (sudo bash $0)"
 fi
@@ -67,67 +67,75 @@ cd "$REPO_DIR" || error "无法进入 $REPO_DIR"
 mkdir -p "$BACKUP_SUBDIR"
 cd "$BACKUP_SUBDIR" || error "无法进入 $BACKUP_SUBDIR"
 
-# ---------- 生成备份文件（带时间戳） ----------
-TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
-CONTENT_BACKUP="content_$TIMESTAMP.tar.gz"
-DB_BACKUP="ghost_db_$TIMESTAMP.sql"
-CONFIG_BACKUP="config_$TIMESTAMP.json"
-CRED_BACKUP="credentials_$TIMESTAMP.txt"
-NGINX_BACKUP="nginx_$TIMESTAMP.conf"
+# ---------- 准备临时目录 ----------
+rm -rf "$TEMP_DIR"
+mkdir -p "$TEMP_DIR"
+cd "$TEMP_DIR" || error "无法进入临时目录"
 
-# 1. 备份 content 目录
+TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
+
+# ---------- 1. 备份 content 目录 ----------
 info "备份 content 目录..."
-tar -czf "$CONTENT_BACKUP" \
+tar -czf content.tar.gz \
     --exclude="*.log" \
     --exclude="*.tmp" \
     --exclude="node_modules" \
     -C "$GHOST_DIR" content/ || warn "content 备份可能不完整。"
 
-# 2. 备份 MySQL 数据库
+# ---------- 2. 备份 MySQL 数据库 ----------
 info "备份 MySQL 数据库..."
-mysqldump -u root -p"$MYSQL_ROOT_PASSWORD" ghost_production > "$DB_BACKUP" || error "数据库备份失败。"
+mysqldump -u root -p"$MYSQL_ROOT_PASSWORD" ghost_production > ghost_db.sql || error "数据库备份失败。"
 
-# 3. 备份 config.production.json
+# ---------- 3. 备份 config.production.json ----------
 info "备份 Ghost 配置文件..."
-cp "$GHOST_DIR/config.production.json" "$CONFIG_BACKUP" || warn "config.production.json 不存在"
+cp "$GHOST_DIR/config.production.json" config.json || warn "config.production.json 不存在"
 
-# 4. 备份凭证文件
+# ---------- 4. 备份凭证文件 ----------
 info "备份凭证文件..."
-cp "$CRED_FILE" "$CRED_BACKUP"
+cp "$CRED_FILE" credentials.txt
 
-# 5. 备份 Nginx 配置
+# ---------- 5. 备份 Nginx 配置 ----------
 info "备份 Nginx 配置..."
 NGINX_CONF=$(grep -l "proxy_pass.*2368" /etc/nginx/sites-available/* 2>/dev/null | head -n1)
 if [ -n "$NGINX_CONF" ]; then
-    cp "$NGINX_CONF" "$NGINX_BACKUP"
+    cp "$NGINX_CONF" nginx.conf
     info "Nginx 配置已备份: $NGINX_CONF"
 else
     warn "未找到与 Ghost 相关的 Nginx 配置文件，跳过 Nginx 备份。"
+    touch nginx.conf   # 创建空文件避免打包失败
 fi
 
-# 6. 显示备份文件大小
-info "备份文件列表:"
-ls -lh "$CONTENT_BACKUP" "$DB_BACKUP" "$CONFIG_BACKUP" "$CRED_BACKUP" "$NGINX_BACKUP" 2>/dev/null | awk '{print $9, $5}'
+# ---------- 6. 打包所有备份文件 ----------
+FULL_BACKUP="ghost_full_backup_$TIMESTAMP.tar.gz"
+info "打包所有备份为 $FULL_BACKUP ..."
+tar -czf "$FULL_BACKUP" \
+    content.tar.gz \
+    ghost_db.sql \
+    config.json \
+    credentials.txt \
+    nginx.conf
 
-# ---------- 提交到 Git ----------
+# ---------- 7. 将打包文件移动到备份子目录 ----------
+mv "$FULL_BACKUP" "$REPO_DIR/$BACKUP_SUBDIR/"
+cd "$REPO_DIR/$BACKUP_SUBDIR" || error "无法进入备份目录"
+
+# ---------- 8. 清理临时文件 ----------
+rm -rf "$TEMP_DIR"
+
+# ---------- 9. 清理旧备份（保留最近 KEEP_DAYS 天） ----------
+if [ "$KEEP_DAYS" -gt 0 ]; then
+    info "清理 $KEEP_DAYS 天前的旧备份文件..."
+    find . -name "ghost_full_backup_*.tar.gz" -mtime +$KEEP_DAYS -delete
+fi
+
+# ---------- 10. 提交到 Git ----------
 info "提交并推送到 Git..."
 cd "$REPO_DIR" || error "无法进入 $REPO_DIR"
 git add .
 git commit -m "自动备份: $TIMESTAMP" || info "无变更需要提交。"
 git push origin "$GIT_BRANCH" || error "Git 推送失败。"
 
-# ---------- 清理旧备份 ----------
-if [ "$KEEP_DAYS" -gt 0 ]; then
-    info "清理 $KEEP_DAYS 天前的旧备份文件..."
-    cd "$REPO_DIR/$BACKUP_SUBDIR" || error "无法进入 $BACKUP_SUBDIR"
-    find . -name "content_*.tar.gz" -mtime +$KEEP_DAYS -delete
-    find . -name "ghost_db_*.sql" -mtime +$KEEP_DAYS -delete
-    find . -name "config_*.json" -mtime +$KEEP_DAYS -delete
-    find . -name "credentials_*.txt" -mtime +$KEEP_DAYS -delete
-    find . -name "nginx_*.conf" -mtime +$KEEP_DAYS -delete
-fi
-
+# ---------- 完成 ----------
 info "✅ 备份完成！"
-info "备份仓库: $REPO_DIR"
-info "备份文件位置: $REPO_DIR/$BACKUP_SUBDIR"
+info "备份文件: $REPO_DIR/$BACKUP_SUBDIR/$FULL_BACKUP"
 info "日志: $LOG_FILE"
