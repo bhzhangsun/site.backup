@@ -215,17 +215,35 @@ jobs:
           USER: ${{ matrix.host.user }}
         run: |
           set -euo pipefail
-          # 关键：加 -o HashKnownHosts=no
-          # GitHub Actions ubuntu runner 的 /etc/ssh/ssh_config 默认
-          # HashKnownHosts=yes，会让 ssh 客户端忽略明文条目（但 ssh-keygen /
-          # ssh-keyscan 不受影响，这就是为什么 "Verify" 看到 OK 而 ssh 报
-          # "No ED25519 host key is known"）。我们的 deploy/known_hosts 是
-          # 明文（方便 git diff / PR review），所以客户端必须显式关掉哈希。
+
+          # ===== DIAG: 自证 known_hosts 在 self-test 时确实存在且路径正确 =====
+          echo "=== DIAG: env ==="
+          echo "  HOME      = [$HOME]"
+          echo "  USER      = [$(whoami)]"
+          echo "  PWD       = [$PWD]"
+          echo "=== DIAG: ~/.ssh/ contents ==="
+          ls -la ~/.ssh/
+          echo "=== DIAG: cat ~/.ssh/known_hosts ==="
+          cat ~/.ssh/known_hosts
+          echo "=== DIAG: grep $HOST in known_hosts ==="
+          grep -F "$HOST" ~/.ssh/known_hosts || echo "::error::$HOST is NOT in known_hosts"
+          echo "=== DIAG: ssh -G effective config ==="
+          # -G 不真的连，只打印 effective config；这是 OpenSSH 7.6+ 的官方诊断方式
+          ssh -G \
+            -p "$PORT" \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -o HashKnownHosts=no \
+            "$HOST" 2>&1 \
+            | grep -iE '^(userknownhostsfile|hashknownhosts|stricthostkeychecking|knownhostsfile|userknownhosts|hostname)\b' \
+            | head
+
+          # ===== 实际连一次 =====
           set +e
           OUT=$(ssh \
             -p "$PORT" \
             -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile=$HOME/.ssh/known_hosts \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
             -o HashKnownHosts=no \
             -o BatchMode=yes \
             -o ConnectTimeout=8 \
@@ -239,18 +257,16 @@ jobs:
           fi
           echo "::error::ssh self-test failed (rc=$RC), output:"
           echo "$OUT"
-          echo "---- re-running with -vvv for diagnosis ----"
+          echo "---- re-running with -vvv (full output, no grep) ----"
           ssh \
             -p "$PORT" \
             -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile=$HOME/.ssh/known_hosts \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
             -o HashKnownHosts=no \
             -o BatchMode=yes \
             -o ConnectTimeout=8 \
             -vvv \
-            "$USER@$HOST" "echo SSH_OK" 2>&1 \
-            | grep -E 'debug1: (Server host key|HostKey|known_hosts|Matching|No matching|Connecting|Authentications|Remote protocol version|kex_exchange_identification|Reading|HashKnownHosts)' \
-            | head -60 || true
+            "$USER@$HOST" "echo SSH_OK" 2>&1 || true
           exit 1
 
       - name: rsync -> ${{ matrix.host.name }}
