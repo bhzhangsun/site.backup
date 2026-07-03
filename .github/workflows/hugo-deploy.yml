@@ -143,14 +143,18 @@ jobs:
           fi
 
       - name: Add known hosts
+        env:
+          # 用 env 块传 multi-line secret，避免在 run 命令里展开产生多行 shell
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
-          echo "--- ~/.ssh/known_hosts (head) ---"
-          head -20 ~/.ssh/known_hosts
-          echo "--- sha256 fingerprint per line ---"
+          echo "--- secret line count: $(printf '%s' "$KNOWN_HOSTS" | wc -l | tr -d ' ')"
+          echo "--- hosts in secret (first column) ---"
+          printf '%s\n' "$KNOWN_HOSTS" | awk 'NF{print "  →", $1}'
+          echo "--- known_hosts fingerprints ---"
           ssh-keygen -lf ~/.ssh/known_hosts || true
 
       - name: rsync -> ${{ matrix.host.name }}
