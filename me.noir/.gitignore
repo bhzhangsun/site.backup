@@ -1,6 +1,0 @@
-# hugo build output
-public/
-resources/
-
-# hugo server lock
-.hugo_build.lock

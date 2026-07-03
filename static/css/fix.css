@@ -1,0 +1,8 @@
+/* 修复：Play CDN 默认 darkMode: 'media'，
+   在亮色模式（html 没有 .dark 类）且 OS 偏好暗色时，
+   .dark\:bg-neutral-800 仍被错误应用 */
+@media (prefers-color-scheme: dark) {
+  html:not(.dark) .dark\:bg-neutral-800 {
+    background-color: transparent !important;
+  }
+}

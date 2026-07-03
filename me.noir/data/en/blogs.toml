@@ -1,9 +1,0 @@
-[[blogs]]
-title = "Find My Life"
-date = "2026-07-03"
-summary = "A short essay about beginnings — how a child met a beige computer and never quite left."
-tags = ["Hugo", "Life", "Coding"]
-content = """
-There is no straight line to a life you love. It began with a sound — the click of a mechanical keyboard in a small, dimly lit room — and the quiet realization that the world in front of me was the one I had been looking for all along.
-"""
-link = "/en/blogs/find-my-life/"

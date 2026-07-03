@@ -1,0 +1,152 @@
+name: Build & Deploy me.noir
+
+# 触发：push 到 main 且只关心站点文件 / workflow / submodule 引用
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'hugo.toml'
+      - 'example.hugo.toml'
+      - 'content/**'
+      - 'themes/**'
+      - 'layouts/**'
+      - 'static/**'
+      - 'data/**'
+      - 'archetypes/**'
+      - 'i18n/**'
+      - 'assets/**'
+      - '.gitignore'
+      - '.gitmodules'
+      - '.github/workflows/**'
+  workflow_dispatch:
+    inputs:
+      hugo_version:
+        description: 'Hugo 版本覆盖（留空走默认）'
+        required: false
+        default: ''
+        type: string
+
+# 同一 ref 串行，老 build 跑完再跑新 build，避免半成品 rsync 覆盖线上
+concurrency:
+  group: deploy-me.noir
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  HUGO_VERSION_DEFAULT: '0.147.0'
+  HUGO_VERSION: ${{ github.event.inputs.hugo_version || env.HUGO_VERSION_DEFAULT }}
+
+jobs:
+  build:
+    name: Build (Hugo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup Hugo (extended)
+        uses: peaceiris/actions-hugo@v3
+        with:
+          hugo-version: ${{ env.HUGO_VERSION }}
+          extended: true
+
+      - name: Hugo version
+        run: hugo version
+
+      - name: Build (gc + minify)
+        run: hugo --gc --minify --logLevel info
+
+      - name: Show build output
+        run: |
+          echo "files: $(find public -type f | wc -l)"
+          echo "size : $(du -sh public | cut -f1)"
+          echo "head :"
+          find public -maxdepth 2 -type d | sort | head -20
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: me-noir-public
+          path: public
+          retention-days: 30
+          if-no-files-found: error
+
+  deploy-1:
+    name: Deploy to host 1
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: me-noir-public
+          path: public
+
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Add known hosts
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: rsync -> host 1
+        run: |
+          set -euo pipefail
+          rsync -avz --delete \
+            --no-perms --no-owner --no-group \
+            -e "ssh -p ${{ secrets.DEPLOY_PORT }} \
+                    -o StrictHostKeyChecking=yes \
+                    -o UserKnownHostsFile=$HOME/.ssh/known_hosts \
+                    -o LogLevel=ERROR" \
+            public/ \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST_1 }}:${{ secrets.DEPLOY_PATH }}/
+          echo "OK: host 1 deployed"
+
+  deploy-2:
+    name: Deploy to host 2
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: me-noir-public
+          path: public
+
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Add known hosts
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: rsync -> host 2
+        run: |
+          set -euo pipefail
+          rsync -avz --delete \
+            --no-perms --no-owner --no-group \
+            -e "ssh -p ${{ secrets.DEPLOY_PORT }} \
+                    -o StrictHostKeyChecking=yes \
+                    -o UserKnownHostsFile=$HOME/.ssh/known_hosts \
+                    -o LogLevel=ERROR" \
+            public/ \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST_2 }}:${{ secrets.DEPLOY_PATH }}/
+          echo "OK: host 2 deployed"
