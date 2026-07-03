@@ -89,7 +89,12 @@ jobs:
         run: |
           set -euo pipefail
           jq -e 'type == "array" and length > 0' deploy/hosts.json
-          jq -c '{hosts: .}' deploy/hosts.json >> "$GITHUB_OUTPUT"
+          # GITHUB_OUTPUT 要求 key=value 或 key<<EOF\nvalue\nEOF 格式
+          {
+            echo "hosts<<EOF"
+            jq -c '{hosts: .}' deploy/hosts.json
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
   deploy:
     name: Deploy to ${{ matrix.host.name }}
