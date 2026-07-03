@@ -144,9 +144,14 @@ jobs:
 
       - name: Add known hosts
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
+          echo "--- ~/.ssh/known_hosts (head) ---"
+          head -20 ~/.ssh/known_hosts
+          echo "--- sha256 fingerprint per line ---"
+          ssh-keygen -lf ~/.ssh/known_hosts || true
 
       - name: rsync -> ${{ matrix.host.name }}
         env:
