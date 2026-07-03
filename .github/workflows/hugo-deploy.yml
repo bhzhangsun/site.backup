@@ -122,6 +122,26 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_KEY }}
 
+      - name: Ensure IPv6 default route (IPv6 targets only)
+        if: contains(matrix.host.host, ':')
+        run: |
+          set -euo pipefail
+          if ip -6 route show default | grep -q .; then
+            echo "IPv6 default route already exists:"
+            ip -6 route show default
+          else
+            IFACE=$(ip -6 addr show scope global -temporary \
+                    | awk '/inet6/ {print $NF; exit}')
+            if [[ -z "$IFACE" ]]; then
+              echo "::error::No interface with global IPv6 address on runner"
+              ip -6 addr show
+              exit 1
+            fi
+            echo "Adding IPv6 default route via fe80::1 on $IFACE"
+            sudo ip -6 route add default via fe80::1 dev "$IFACE"
+            ip -6 route show default
+          fi
+
       - name: Add known hosts
         run: |
           mkdir -p ~/.ssh
