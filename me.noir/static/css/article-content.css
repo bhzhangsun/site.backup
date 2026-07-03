@@ -1,0 +1,205 @@
+/* Article content typography
+   主题用 Tailwind Play CDN，不带 @tailwindcss/typography 插件，
+   .prose 实际是无效类。这里手写一套排版兜底，挂在 .article-content 容器上。 */
+
+.article-content {
+    color: #374151;
+    line-height: 1.7;
+    font-size: 1rem;
+}
+
+/* Headings */
+.article-content h1,
+.article-content h2,
+.article-content h3,
+.article-content h4,
+.article-content h5,
+.article-content h6 {
+    color: #111827;
+    font-weight: 700;
+    line-height: 1.25;
+    margin-top: 2.5rem;
+    margin-bottom: 1rem;
+}
+
+.article-content h1 { font-size: 2.25rem; }
+.article-content h2 {
+    font-size: 1.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid #e5e7eb;
+}
+.article-content h3 { font-size: 1.25rem; }
+.article-content h4 { font-size: 1.125rem; }
+.article-content h5 { font-size: 1rem; }
+.article-content h6 { font-size: 0.95rem; color: #4b5563; }
+
+.article-content h1:first-child,
+.article-content h2:first-child,
+.article-content h3:first-child {
+    margin-top: 0;
+}
+
+/* Paragraphs */
+.article-content p {
+    margin: 1rem 0;
+}
+
+/* Links */
+.article-content a {
+    color: #0284c7;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    text-decoration-thickness: 1px;
+}
+
+.article-content a:hover {
+    color: #0369a1;
+}
+
+/* Lists */
+.article-content ul,
+.article-content ol {
+    margin: 1rem 0;
+    padding-left: 1.75rem;
+}
+
+.article-content ul { list-style: disc; }
+.article-content ol { list-style: decimal; }
+
+.article-content li {
+    margin: 0.35rem 0;
+    padding-left: 0.25rem;
+}
+
+.article-content li > p {
+    margin: 0.5rem 0;
+}
+
+.article-content li::marker {
+    color: #6b7280;
+}
+
+/* Blockquote */
+.article-content blockquote {
+    margin: 1.5rem 0;
+    padding: 0.75rem 1.25rem;
+    border-left: 4px solid #d1d5db;
+    color: #4b5563;
+    font-style: italic;
+    background: transparent;
+}
+
+.article-content blockquote > :first-child { margin-top: 0; }
+.article-content blockquote > :last-child { margin-bottom: 0; }
+
+/* Inline code */
+.article-content :not(pre) > code {
+    background: #f4f4f5;
+    color: #18181b;
+    padding: 0.15rem 0.4rem;
+    border-radius: 0.25rem;
+    font-size: 0.875em;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-weight: 500;
+}
+
+/* Code block */
+.article-content pre {
+    margin: 1.5rem 0;
+    padding: 1rem 1.25rem;
+    background: #18181b;
+    color: #f3f4f6;
+    border-radius: 0.5rem;
+    overflow-x: auto;
+    font-size: 0.875rem;
+    line-height: 1.6;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.article-content pre code {
+    background: transparent;
+    color: inherit;
+    padding: 0;
+    font-size: inherit;
+    font-weight: 400;
+}
+
+/* Horizontal rule */
+.article-content hr {
+    margin: 2.5rem 0;
+    border: 0;
+    border-top: 1px solid #e5e7eb;
+}
+
+/* Inline emphasis */
+.article-content strong { font-weight: 600; color: #111827; }
+.article-content em { font-style: italic; }
+.article-content del { color: #9ca3af; }
+
+/* Images */
+.article-content img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 0.5rem;
+    margin: 1.5rem 0;
+}
+
+/* Tables */
+.article-content table {
+    width: 100%;
+    margin: 1.5rem 0;
+    border-collapse: collapse;
+    font-size: 0.95rem;
+}
+
+.article-content th,
+.article-content td {
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #e5e7eb;
+    text-align: left;
+}
+
+.article-content th {
+    background: #f9fafb;
+    font-weight: 600;
+}
+
+/* Dark mode — 跟随 html.dark（不受 OS 偏好 + Play CDN darkMode: media 影响） */
+html.dark .article-content { color: #d1d5db; }
+
+html.dark .article-content h1,
+html.dark .article-content h2,
+html.dark .article-content h3,
+html.dark .article-content h4,
+html.dark .article-content h5,
+html.dark .article-content h6 { color: #f3f4f6; }
+
+html.dark .article-content h2 { border-top-color: #374151; }
+
+html.dark .article-content a { color: #38bdf8; }
+html.dark .article-content a:hover { color: #7dd3fc; }
+
+html.dark .article-content blockquote {
+    border-left-color: #374151;
+    color: #9ca3af;
+}
+
+html.dark .article-content :not(pre) > code {
+    background: #27272a;
+    color: #f3f4f6;
+}
+
+html.dark .article-content pre {
+    background: #0b0b0c;
+    color: #e5e7eb;
+}
+
+html.dark .article-content hr { border-top-color: #374151; }
+
+html.dark .article-content li::marker { color: #9ca3af; }
+
+html.dark .article-content strong { color: #f3f4f6; }
+
+html.dark .article-content th,
+html.dark .article-content td { border-color: #374151; }
+html.dark .article-content th { background: #1f2937; }
