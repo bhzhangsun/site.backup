@@ -1,6 +1,6 @@
 name: Build & Deploy me.noir
 
-# 触发：push 到 main 且只关心站点文件 / workflow / submodule 引用
+# 触发：push 到 main 且只关心站点文件 / workflow / 部署清单 / submodule 引用
 on:
   push:
     branches: [main]
@@ -17,6 +17,7 @@ on:
       - 'assets/**'
       - '.gitignore'
       - '.gitmodules'
+      - 'deploy/**'
       - '.github/workflows/**'
   workflow_dispatch:
     inputs:
@@ -25,11 +26,6 @@ on:
         required: false
         default: ''
         type: string
-
-# 同一 ref 串行，老 build 跑完再跑新 build，避免半成品 rsync 覆盖线上
-concurrency:
-  group: deploy-me.noir
-  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -77,12 +73,35 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-  deploy-1:
-    name: Deploy to host 1
+  set-matrix:
+    name: Read host list
     needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      hosts: ${{ steps.read.outputs.hosts }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load deploy/hosts.json
+        id: read
+        run: |
+          set -euo pipefail
+          jq -e 'type == "array" and length > 0' deploy/hosts.json
+          jq -c '{hosts: .}' deploy/hosts.json >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy to ${{ matrix.host.name }}
+    needs: set-matrix
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: production
+    # 按机器拆并发组：同机器多次 push 串行；不同机器互不阻塞
+    concurrency:
+      group: deploy-me.noir-${{ matrix.host.name }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        host: ${{ fromJSON(needs.set-matrix.outputs.hosts).hosts }}
     steps:
       - name: Download artifact
         uses: actions/download-artifact@v4
@@ -93,7 +112,7 @@ jobs:
       - name: Setup SSH agent
         uses: webfactory/ssh-agent@v0.9.0
         with:
-          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+          ssh-private-key: ${{ secrets.SSH_KEY }}
 
       - name: Add known hosts
         run: |
@@ -101,52 +120,26 @@ jobs:
           printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: rsync -> host 1
+      - name: rsync -> ${{ matrix.host.name }}
+        env:
+          HOST: ${{ matrix.host.host }}
+          PORT: ${{ matrix.host.port }}
+          USER: ${{ matrix.host.user }}
+          PATH_: ${{ matrix.host.path }}
         run: |
           set -euo pipefail
+          # IPv6 字面量需方括号包裹；IPv4 / 域名保持原样
+          if [[ "$HOST" == *":"* ]]; then
+            TARGET="${USER}@[${HOST}]:${PATH_}/"
+          else
+            TARGET="${USER}@${HOST}:${PATH_}/"
+          fi
           rsync -avz --delete \
             --no-perms --no-owner --no-group \
-            -e "ssh -p ${{ secrets.DEPLOY_PORT }} \
+            -e "ssh -p ${PORT} \
                     -o StrictHostKeyChecking=yes \
                     -o UserKnownHostsFile=$HOME/.ssh/known_hosts \
                     -o LogLevel=ERROR" \
             public/ \
-            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST_1 }}:${{ secrets.DEPLOY_PATH }}/
-          echo "OK: host 1 deployed"
-
-  deploy-2:
-    name: Deploy to host 2
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    environment: production
-    steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: me-noir-public
-          path: public
-
-      - name: Setup SSH agent
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
-
-      - name: Add known hosts
-        run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-
-      - name: rsync -> host 2
-        run: |
-          set -euo pipefail
-          rsync -avz --delete \
-            --no-perms --no-owner --no-group \
-            -e "ssh -p ${{ secrets.DEPLOY_PORT }} \
-                    -o StrictHostKeyChecking=yes \
-                    -o UserKnownHostsFile=$HOME/.ssh/known_hosts \
-                    -o LogLevel=ERROR" \
-            public/ \
-            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST_2 }}:${{ secrets.DEPLOY_PATH }}/
-          echo "OK: host 2 deployed"
+            "${TARGET}"
+          echo "OK: ${{ matrix.host.name }} deployed to ${TARGET}"

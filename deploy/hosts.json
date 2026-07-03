@@ -1,0 +1,16 @@
+[
+  {
+    "name": "my-vps",
+    "host": "2400:8d60:0003:0000:0000:0001:e937:c0d0",
+    "user": "deploy",
+    "port": 22,
+    "path": "/var/www/html"
+  },
+  {
+    "name": "uk-vps",
+    "host": "212.135.42.43",
+    "user": "deploy",
+    "port": 24743,
+    "path": "/var/www/html"
+  }
+]
