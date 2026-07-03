@@ -144,16 +144,25 @@ jobs:
 
       - name: Add known hosts
         env:
-          # 用 env 块传 multi-line secret，避免在 run 命令里展开产生多行 shell
-          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          # Secret 留作回退（可后续在 Settings → Secrets 删除）
+          KNOWN_HOSTS_SECRET: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
-          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          # 优先用仓库内 deploy/known_hosts（跟代码一起走，无 Secret 缓存问题）
+          if [[ -s deploy/known_hosts ]]; then
+            echo "--- source: deploy/known_hosts (repo) ---"
+            cp deploy/known_hosts ~/.ssh/known_hosts
+          elif [[ -n "${KNOWN_HOSTS_SECRET:-}" ]]; then
+            echo "--- source: DEPLOY_KNOWN_HOSTS secret (fallback) ---"
+            printf '%s\n' "$KNOWN_HOSTS_SECRET" > ~/.ssh/known_hosts
+          else
+            echo "::error::No known_hosts source. Commit deploy/known_hosts or set DEPLOY_KNOWN_HOSTS secret."
+            exit 1
+          fi
           chmod 600 ~/.ssh/known_hosts
-          echo "--- secret line count: $(printf '%s' "$KNOWN_HOSTS" | wc -l | tr -d ' ')"
-          echo "--- hosts in secret (first column) ---"
-          printf '%s\n' "$KNOWN_HOSTS" | awk 'NF{print "  →", $1}'
+          echo "--- hosts in known_hosts (first column) ---"
+          awk 'NF && $1 !~ /^#/{print "  →", $1}' ~/.ssh/known_hosts
           echo "--- known_hosts fingerprints ---"
           ssh-keygen -lf ~/.ssh/known_hosts || true
 

@@ -1,0 +1,10 @@
+# SSH known_hosts for deploy targets.
+#
+# 不要手写这一行; 改 IP / 重装 VPS 后, 用 ssh-keyscan 重新生成:
+#   ssh-keyscan -p 22    -T 8 45.134.36.142  >> deploy/known_hosts
+#   ssh-keyscan -p 24743 -T 8 212.135.42.43 >> deploy/known_hosts
+#
+# 指纹本身是公开信息（keyscan 即可获得），入仓零安全风险，
+# 但能彻底绕开 GitHub Secret 缓存 / 复制粘贴导致的 known_hosts 不一致问题。
+[45.134.36.142]:22 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG4Xgz251M4dZAXkZb12ByAyPHkp+qKchr2eAXXydO24
+[212.135.42.43]:24743 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEDy0XYij6W/00FlhPclVor2jAcxtj9o8CPLTYeLNBsL
