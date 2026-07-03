@@ -111,6 +111,15 @@ jobs:
       matrix:
         host: ${{ fromJSON(needs.set-matrix.outputs.hosts).hosts }}
     steps:
+      # sparse-checkout deploy/ 拿 known_hosts；同时 download artifact。
+      # 注意：必须在 download artifact 之前完成 checkout，
+      # 否则会被 artifact 覆盖导致 deploy/known_hosts 丢失。
+      - name: Checkout (sparse, for deploy/known_hosts)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: deploy
+          fetch-depth: 1
+
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
@@ -165,6 +174,77 @@ jobs:
           awk 'NF && $1 !~ /^#/{print "  →", $1}' ~/.ssh/known_hosts
           echo "--- known_hosts fingerprints ---"
           ssh-keygen -lf ~/.ssh/known_hosts || true
+
+      - name: Verify live host key vs known_hosts
+        env:
+          HOST: ${{ matrix.host.host }}
+          PORT: ${{ matrix.host.port }}
+        run: |
+          set -euo pipefail
+          echo "=== live ssh-keyscan (ed25519 only) ==="
+          LIVE=$(ssh-keyscan -p "$PORT" -T 8 "$HOST" 2>/dev/null \
+                 | awk '$2 == "ssh-ed25519"' || true)
+          if [[ -z "$LIVE" ]]; then
+            echo "::error::ssh-keyscan did not return an ed25519 key for $HOST:$PORT"
+            ssh-keyscan -p "$PORT" -T 8 "$HOST" 2>&1 || true
+            exit 1
+          fi
+          echo "$LIVE"
+
+          echo "=== file ed25519 entries (any host pattern) ==="
+          FILE=$(awk 'NF && $1 !~ /^#/' ~/.ssh/known_hosts | awk '$2 == "ssh-ed25519"' || true)
+          echo "$FILE"
+
+          echo "=== key-by-key comparison ==="
+          LIVE_KEY=$(echo "$LIVE" | awk '{print $NF}')
+          if echo "$FILE" | grep -qF "$LIVE_KEY"; then
+            echo "OK: server's ed25519 key is present in known_hosts"
+          else
+            echo "::error::server's ed25519 key is NOT in known_hosts"
+            echo "  server : $LIVE"
+            echo "  file   : $FILE"
+            echo ""
+            echo "VPS host key has rotated. Fix: ssh-keyscan -p $PORT -T 8 $HOST | grep ' ssh-ed25519 ' >> deploy/known_hosts"
+            exit 1
+          fi
+
+      - name: Self-test SSH connection
+        env:
+          HOST: ${{ matrix.host.host }}
+          PORT: ${{ matrix.host.port }}
+          USER: ${{ matrix.host.user }}
+        run: |
+          set -euo pipefail
+          # BATCH=true + ConnectTimeout=8, 不会卡住；LogLevel=ERROR 只看真正错误
+          set +e
+          OUT=$(ssh \
+            -p "$PORT" \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=$HOME/.ssh/known_hosts \
+            -o BatchMode=yes \
+            -o ConnectTimeout=8 \
+            -o LogLevel=ERROR \
+            "$USER@$HOST" "echo SSH_OK" 2>&1)
+          RC=$?
+          set -e
+          if [[ $RC -eq 0 ]]; then
+            echo "OK: ssh self-test connected and authenticated"
+            exit 0
+          fi
+          echo "::error::ssh self-test failed (rc=$RC), output:"
+          echo "$OUT"
+          echo "---- re-running with -v for diagnosis ----"
+          ssh \
+            -p "$PORT" \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=$HOME/.ssh/known_hosts \
+            -o BatchMode=yes \
+            -o ConnectTimeout=8 \
+            -v \
+            "$USER@$HOST" "echo SSH_OK" 2>&1 \
+            | grep -E 'debug1: (Server host key|HostKey|known_hosts|Matching|No matching|Connecting|Authentications|Remote protocol version|kex_exchange_identification)' \
+            | head -50 || true
+          exit 1
 
       - name: rsync -> ${{ matrix.host.name }}
         env:
