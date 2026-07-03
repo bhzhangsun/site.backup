@@ -215,12 +215,18 @@ jobs:
           USER: ${{ matrix.host.user }}
         run: |
           set -euo pipefail
-          # BATCH=true + ConnectTimeout=8, 不会卡住；LogLevel=ERROR 只看真正错误
+          # 关键：加 -o HashKnownHosts=no
+          # GitHub Actions ubuntu runner 的 /etc/ssh/ssh_config 默认
+          # HashKnownHosts=yes，会让 ssh 客户端忽略明文条目（但 ssh-keygen /
+          # ssh-keyscan 不受影响，这就是为什么 "Verify" 看到 OK 而 ssh 报
+          # "No ED25519 host key is known"）。我们的 deploy/known_hosts 是
+          # 明文（方便 git diff / PR review），所以客户端必须显式关掉哈希。
           set +e
           OUT=$(ssh \
             -p "$PORT" \
             -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile=$HOME/.ssh/known_hosts \
+            -o HashKnownHosts=no \
             -o BatchMode=yes \
             -o ConnectTimeout=8 \
             -o LogLevel=ERROR \
@@ -233,17 +239,18 @@ jobs:
           fi
           echo "::error::ssh self-test failed (rc=$RC), output:"
           echo "$OUT"
-          echo "---- re-running with -v for diagnosis ----"
+          echo "---- re-running with -vvv for diagnosis ----"
           ssh \
             -p "$PORT" \
             -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile=$HOME/.ssh/known_hosts \
+            -o HashKnownHosts=no \
             -o BatchMode=yes \
             -o ConnectTimeout=8 \
-            -v \
+            -vvv \
             "$USER@$HOST" "echo SSH_OK" 2>&1 \
-            | grep -E 'debug1: (Server host key|HostKey|known_hosts|Matching|No matching|Connecting|Authentications|Remote protocol version|kex_exchange_identification)' \
-            | head -50 || true
+            | grep -E 'debug1: (Server host key|HostKey|known_hosts|Matching|No matching|Connecting|Authentications|Remote protocol version|kex_exchange_identification|Reading|HashKnownHosts)' \
+            | head -60 || true
           exit 1
 
       - name: rsync -> ${{ matrix.host.name }}
@@ -265,6 +272,7 @@ jobs:
             -e "ssh -p ${PORT} \
                     -o StrictHostKeyChecking=yes \
                     -o UserKnownHostsFile=$HOME/.ssh/known_hosts \
+                    -o HashKnownHosts=no \
                     -o LogLevel=ERROR" \
             public/ \
             "${TARGET}"
