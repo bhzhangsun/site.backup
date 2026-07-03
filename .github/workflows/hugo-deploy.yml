@@ -31,8 +31,8 @@ permissions:
   contents: read
 
 env:
+  # 默认版本号，作为 inputs.hugo_version 为空时的回退
   HUGO_VERSION_DEFAULT: '0.147.0'
-  HUGO_VERSION: ${{ github.event.inputs.hugo_version || env.HUGO_VERSION_DEFAULT }}
 
 jobs:
   build:
@@ -47,6 +47,9 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Hugo (extended)
+        env:
+          # 在 step 级 env 里引用工作流级 env.HUGO_VERSION_DEFAULT 是允许的
+          HUGO_VERSION: ${{ github.event.inputs.hugo_version || env.HUGO_VERSION_DEFAULT }}
         uses: peaceiris/actions-hugo@v3
         with:
           hugo-version: ${{ env.HUGO_VERSION }}
