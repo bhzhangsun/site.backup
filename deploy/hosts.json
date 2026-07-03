@@ -1,7 +1,7 @@
 [
   {
     "name": "my-vps",
-    "host": "2400:8d60:0003:0000:0000:0001:e937:c0d0",
+    "host": "45.134.36.142",
     "user": "deploy",
     "port": 22,
     "path": "/var/www/html"
