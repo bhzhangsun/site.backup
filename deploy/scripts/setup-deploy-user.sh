@@ -59,6 +59,14 @@ else
 fi
 
 # 3. sudo 免密码（仅 deploy 用户）
+#    Debian 11 最小化镜像默认不装 sudo，没有 /etc/sudoers.d/ 目录；
+#    缺则补装，让脚本在裸 Debian 11/12 上也能一键跑通。
+if ! command -v sudo >/dev/null 2>&1; then
+  echo "[warn] sudo 未安装，正在安装"
+  apt-get update -y >/dev/null
+  apt-get install -y sudo >/dev/null
+  echo "[ok] 已安装 sudo: $(sudo --version | head -1)"
+fi
 SUDOERS_FILE="/etc/sudoers.d/90-${USERNAME}-deploy"
 cat > "$SUDOERS_FILE" <<EOF
 # 由 setup-deploy-user.sh 生成
