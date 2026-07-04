@@ -10,9 +10,8 @@ deploy/
 ├── known_hosts             # SSH 主机指纹
 └── scripts/
     ├── setup-deploy-user.sh   # ① 创建 deploy 用户 + SSH 公钥 + sudo 免密
-    ├── setup-nginx-site.sh    # ② nginx mainline + :8080 HY2 masq 伪装 server
+    ├── setup-nginx-site.sh    # ② nginx mainline + :80 HTTP + :8443 TCP/UDP 双栈
     └── setup-singbox.sh       # ③ sing-box 1.11+ + Reality/HY2 共用 443
-```
 ```
 
 ## 执行顺序
@@ -25,8 +24,8 @@ deploy/
    │
    ▼
 ② setup-nginx-site.sh
-   │  装 nginx mainline、写 :8080 masq server block
-   │  （masq 是 sing-box HY2 的下游，必须先准备好）
+   │  装 nginx mainline、写 :80 HTTP + :8443 TCP/UDP 双栈
+   │  （:80 是直接访问入口 + hy2 masq 下游；:8443 是 reality fallback + h3 升级目标）
    │
    ▼
 ③ setup-singbox.sh
@@ -44,17 +43,34 @@ deploy/
 | `setup-nginx-site.sh` | 不创建 deploy 用户、不配 sudo | `setup-deploy-user.sh` |
 | `setup-singbox.sh` | 不改 sudo、不动 nginx | 前两个 |
 
+## 端口分配
+
+| 端口 | 协议 | 服务 | 用途 |
+|---|---|---|---|
+| `:80`   TCP | HTTP    | nginx | Hugo 静态站（直接访问 + hy2 masq 探测者伪装目标） |
+| `:443`  TCP | TLS     | sing-box vless reality | 代理客户端 + 短 ID 失败 + ALPN 时 fallback 到 :8443 |
+| `:443`  UDP | QUIC    | sing-box hy2 | 代理客户端；非 hy2 客户端 → masq → :80 |
+| `:8443` TCP | TLS (h2)| nginx | vless reality fallback 目标 + Alt-Svc 头（引导浏览器升 h3） |
+| `:8443` UDP | QUIC (h3) | nginx | 浏览器 Alt-Svc 升级后的 h3 目标 |
+
+**关键路由**：
+- 浏览器 `https://nestseeker.xyz/` → TCP 443 vless → fallback → TCP 8443 nginx h2 → 响应带 `Alt-Svc: h3=":8443"`
+- 浏览器第二次访问 → happy-eyeballs 升级到 UDP 8443 nginx h3（**绕开 sing-box**）
+- 裸探测者（无 ALPN）→ vless 直接 RST（反探测保留）
+- 探测者 SNI=tesla.com → vless 透明转发到真实 tesla.com:443（reality 反探测）
+
 ## SSL 证书清单
 
-只有一张**自签 cert**（给 HY2 用）：
+只有一张**自签 cert**（CN=nestseeker.xyz），**两个用途复用**：
 
 | cert | 生成脚本 | CN | 路径 | 给谁看 |
 |---|---|---|---|---|
-| **HY2 cert** | `setup-singbox.sh` | `nestseeker.xyz` | `/etc/sing-box/certs/hy2.pem` + `.key` | HY2 客户端（验证 cert CN == SNI） |
+| **HY2 + nginx HTTPS cert** | `setup-singbox.sh` | `nestseeker.xyz` | `/etc/sing-box/certs/hy2.pem` + `.key` | HY2 客户端（验证 CN == SNI）；nginx 8443 TCP/UDP（h2/h3 TLS 握手） |
 
 - HY2 客户端需要 `insecure=true`（自签 cert 信任问题）
 - Reality 自带跳过 cert 验证，不依赖任何 cert
-- 真实 cert（acme.sh 申请 `nestseeker.xyz`）可在 `setup-singbox.sh` 之后手动替换
+- 浏览器访问 `https://nestseeker.xyz:8443/` 需手动信任自签 cert
+- 真实 cert（acme.sh 申请 `nestseeker.xyz`）可在 `setup-singbox.sh` 之后手动替换，**同时**更新 HY2 inbound 与 nginx 两个 server block 的 `ssl_certificate` 路径
 
 ## VPS 上完整执行流程
 
@@ -96,14 +112,15 @@ wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/s
 可选覆盖（一般不用动）：
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-nginx-site.sh | MASQ_PORT=8080 MASQ_DOC_ROOT=/var/www/nestseeker.xyz bash
+wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-nginx-site.sh | MASQ_PORT=80 MASQ_DOC_ROOT=/var/www/nestseeker.xyz bash
 ```
 
 **本地验证**：
 
 ```bash
-curl -I  http://127.0.0.1:8080     # 应返回 200 + Hugo
-ss -lnt | grep ':8080'              # 应在 LISTEN
+curl -I  http://127.0.0.1:80      # Hugo plain HTTP
+curl -kI https://127.0.0.1:8443/  # HTTPS（自签 cert，-k 跳过验证）；响应头应带 Alt-Svc: h3=":8443"
+ss -lntu | grep -E ':(80|8443)\s'  # 应看到 :80 tcp + :8443 tcp + udp
 ```
 
 ### 3. ③ 装 sing-box
@@ -115,19 +132,19 @@ wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/s
 可选覆盖（默认就够用）：
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-singbox.sh | REALITY_HANDSHAKE_SERVER=www.tesla.com REALITY_SERVER_NAME=nestseeker.xyz HY2_SERVER_NAME=nestseeker.xyz bash
+wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-singbox.sh | REALITY_HANDSHAKE_SERVER=www.tesla.com HY2_SERVER_NAME=nestseeker.xyz MASQ_PROXY_PORT=80 bash
 ```
 
 **脚本末尾会打印客户端配置**，包含：
-- Reality: `uuid` / `publicKey` / `shortId` / SNI
-- HY2: `password` / SNI
+- Reality: `uuid` / `publicKey` / `shortId` / SNI（TCP:443）
+- HY2: `password` / SNI（UDP:443）
 
 **本地验证**：
 
 ```bash
 sing-box check -c /etc/sing-box/config.json
 systemctl status sing-box
-ss -lntu | grep ':443'   # 应看到一条 tcp + 一条 udp 都 LISTEN
+ss -lntu | grep ':443'   # 应看到一条 tcp (reality) + 一条 udp (hy2) 都 LISTEN
 ```
 
 ### 4. 客户端连接
