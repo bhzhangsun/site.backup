@@ -76,6 +76,16 @@ else
   echo "[warn] $DEPLOY_PATH 不存在；可后续手动执行：sudo mkdir -p $DEPLOY_PATH && sudo chown $USERNAME:$USERNAME $DEPLOY_PATH"
 fi
 
+# 5. 部署依赖：rsync（workflow 走 rsync 协议做增量同步与 --delete）
+#    Debian 默认不装；显式装一次，后续 deploy 即可直接使用。
+if command -v rsync >/dev/null 2>&1; then
+  echo "[ok] rsync 已存在: $(rsync --version | head -1)"
+else
+  apt-get update -y >/dev/null
+  apt-get install -y rsync >/dev/null
+  echo "[ok] 已安装 rsync: $(rsync --version | head -1)"
+fi
+
 # 5. 不再自动修改 /etc/ssh/sshd_config，避免影响其他账户登录方式。
 # 如需加固，可参考（按需手动执行）：
 #   sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
