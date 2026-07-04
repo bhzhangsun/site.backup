@@ -226,7 +226,9 @@ cat > "$CONFIG_FILE" <<EOF
       ],
       "tls": {
         "enabled": true,
+        "server_name": "$REALITY_HANDSHAKE_SERVER",
         "reality": {
+          "enabled": true,
           "handshake": {
             "server": "$REALITY_HANDSHAKE_SERVER",
             "server_port": $REALITY_HANDSHAKE_PORT
