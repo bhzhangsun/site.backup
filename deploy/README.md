@@ -10,7 +10,7 @@ deploy/
 ├── known_hosts             # SSH 主机指纹
 └── scripts/
     ├── setup-deploy-user.sh   # ① 创建 deploy 用户 + SSH 公钥 + sudo 免密
-    ├── setup-nginx-site.sh    # ② nginx mainline + 8443/8080 两个伪装 server
+    ├── setup-nginx-site.sh    # ② nginx mainline + :8080 HY2 masq 伪装 server
     └── setup-singbox.sh       # ③ sing-box 1.11+ + Reality/HY2 共用 443
 ```
 ```
@@ -25,8 +25,8 @@ deploy/
    │
    ▼
 ② setup-nginx-site.sh
-   │  装 nginx mainline、自签 :8443 cert、写两个 server block
-   │  （fallback / masq 是 sing-box 的下游，必须先准备好）
+   │  装 nginx mainline、写 :8080 masq server block
+   │  （masq 是 sing-box HY2 的下游，必须先准备好）
    │
    ▼
 ③ setup-singbox.sh
@@ -54,7 +54,6 @@ deploy/
 
 - HY2 客户端需要 `insecure=true`（自签 cert 信任问题）
 - Reality 自带跳过 cert 验证，不依赖任何 cert
-- :8443（Reality fallback）**不开 SSL**——plain TCP + 444 关连接，cert 在这条链路上没有意义
 - 真实 cert（acme.sh 申请 `nestseeker.xyz`）可在 `setup-singbox.sh` 之后手动替换
 
 ## VPS 上完整执行流程
@@ -97,15 +96,14 @@ wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/s
 可选覆盖（一般不用动）：
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-nginx-site.sh | FALLBACK_PORT=8443 MASQ_PORT=8080 MASQ_DOC_ROOT=/var/www/nestseeker.xyz bash
+wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-nginx-site.sh | MASQ_PORT=8080 MASQ_DOC_ROOT=/var/www/nestseeker.xyz bash
 ```
 
 **本地验证**：
 
 ```bash
-curl -I  http://127.0.0.1:8443    # 应返回 444（plain TCP，连接立刻关）
 curl -I  http://127.0.0.1:8080     # 应返回 200 + Hugo
-ss -lnt | grep -E ':(8443|8080)'   # 两个端口都应在 LISTEN
+ss -lnt | grep ':8080'              # 应在 LISTEN
 ```
 
 ### 3. ③ 装 sing-box

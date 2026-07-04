@@ -13,8 +13,6 @@
 #   REALITY_SERVER_NAME=nestseeker.xyz
 #   HY2_SERVER_NAME=nestseeker.xyz
 #   HY2_CERT_CN=nestseeker.xyz
-#   FALLBACK_ADDR=127.0.0.1
-#   FALLBACK_PORT=8443
 #   MASQ_PROXY_ADDR=127.0.0.1
 #   MASQ_PROXY_PORT=8080
 #   FORCE_REGEN_KEYS=1   # 强制重新生成所有密钥（重置后所有客户端失效）
@@ -28,8 +26,6 @@ REALITY_HANDSHAKE_PORT="${REALITY_HANDSHAKE_PORT:-443}"
 REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-nestseeker.xyz}"
 HY2_SERVER_NAME="${HY2_SERVER_NAME:-nestseeker.xyz}"
 HY2_CERT_CN="${HY2_CERT_CN:-nestseeker.xyz}"
-FALLBACK_ADDR="${FALLBACK_ADDR:-127.0.0.1}"
-FALLBACK_PORT="${FALLBACK_PORT:-8443}"
 MASQ_PROXY_ADDR="${MASQ_PROXY_ADDR:-127.0.0.1}"
 MASQ_PROXY_PORT="${MASQ_PROXY_PORT:-8080}"
 FORCE_REGEN_KEYS="${FORCE_REGEN_KEYS:-0}"
@@ -182,7 +178,7 @@ fi
 #   - Reality 监听 TCP:443（vless + reality）
 #   - HY2     监听 UDP:443（hysteria2）
 #   sing-box 内部自动区分 TCP/UDP，同一端口不冲突
-#   - Reality 失败（短 ID 验证失败）→ fallback 到 127.0.0.1:8443 (nginx)
+#   - Reality 失败（短 ID 验证失败）→ sing-box 直接关连接（不配 fallback：探测者被 reset）
 #   - HY2 失败（非 HY2 客户端）    → masquerade proxy 到 127.0.0.1:8080 (nginx)
 echo "[info] 写入 $CONFIG_FILE"
 
@@ -214,10 +210,6 @@ cat > "$CONFIG_FILE" <<EOF
           "private_key": "$REALITY_PRIVATE_KEY",
           "short_id": ["$SHORT_ID_1"]
         }
-      },
-      "fallback": {
-        "server": "$FALLBACK_ADDR",
-        "server_port": $FALLBACK_PORT
       }
     },
     {
@@ -279,8 +271,8 @@ cat <<EOF
 [完成] sing-box 已就位：
   - Reality (TCP:443) : UUID=$UUID, SNI=$REALITY_SERVER_NAME, dest=$REALITY_HANDSHAKE_SERVER
   - HY2     (UDP:443) : SNI=$HY2_SERVER_NAME, CN=$HY2_CERT_CN
-  - fallback : $FALLBACK_ADDR:$FALLBACK_PORT (Reality 失败时 → nginx 8443)
-  - masq     : $MASQ_PROXY_ADDR:$MASQ_PROXY_PORT (HY2 失败时     → nginx 8080)
+  - masq     : $MASQ_PROXY_ADDR:$MASQ_PROXY_PORT (HY2 失败时 → nginx 8080)
+  - (Reality 失败探测者：sing-box 直接 reset，无 fallback)
 
 [客户端配置 - 通用]
   vps_ip: <your vps ip>
