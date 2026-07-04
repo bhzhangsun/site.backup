@@ -32,7 +32,10 @@ FORCE_REGEN_KEYS="${FORCE_REGEN_KEYS:-0}"
 FORCE_REGEN_CERT="${FORCE_REGEN_CERT:-0}"
 
 SING_BOX_DIR="/etc/sing-box"
-KEYS_FILE="$SING_BOX_DIR/keys.json"
+# keys.json 必须放配置目录外：sing-box 1.13+ systemd service 用 -C /etc/sing-box
+# 扫描整个目录所有 .json 作 config；放 config 目录里会被当第二份 config 加载并报 schema 错
+# StateDirectory=/var/lib/sing-box 是 sing-box service 的 working dir，天然归属 sing-box 用户
+KEYS_FILE="/var/lib/sing-box/keys.json"
 CONFIG_FILE="$SING_BOX_DIR/config.json"
 CERT_DIR="$SING_BOX_DIR/certs"
 HY2_CERT="$CERT_DIR/hy2.pem"
