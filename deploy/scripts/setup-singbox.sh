@@ -19,6 +19,9 @@
 #   FORCE_REGEN_CERT=1   # 强制重新生成 HY2 cert
 
 set -euo pipefail
+# 出错时打印死在哪行、什么命令（避免 set -e 静默死）
+trap 'echo "[FATAL] line $LINENO: $BASH_COMMAND  exit=$?" >&2' ERR
+trap 'echo "[FATAL] interrupted line $LINENO" >&2' INT TERM
 
 # === 默认值 ===
 REALITY_HANDSHAKE_SERVER="${REALITY_HANDSHAKE_SERVER:-www.tesla.com}"
@@ -44,11 +47,17 @@ CERT_DAYS=3650
 
 # === 探测本机出口 IP（用于生成客户端 URI） ===
 # 用 "ip route get <公网地址> 的 src" 拿真实对外的公网 IP（双网卡 VPS 也准）
-HOSTNAME_SHORT=$(hostname -s 2>/dev/null | tr -dc 'A-Za-z0-9_-' || echo "vps")
-VPS_IPV4=$(ip -4 route get 1.1.1.1 2>/dev/null \
-  | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
-VPS_IPV6=$(ip -6 route get 2606:4700:4700::1111 2>/dev/null \
-  | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
+# 加 timeout + || echo "" 兜底：IP 探测绝不让 set -e 触发导致整个脚本静默死
+HOSTNAME_SHORT=$(hostname -s 2>/dev/null | tr -dc 'A-Za-z0-9_-' | head -c 32 || echo "vps")
+VPS_IPV4=$(timeout 3 ip -4 route get 1.1.1.1 2>/dev/null \
+  | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}' \
+  || echo "")
+VPS_IPV6=$(timeout 3 ip -6 route get 2606:4700:4700::1111 2>/dev/null \
+  | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}' \
+  || echo "")
+# 防 set -u 触发：变量可能未定义
+: "${VPS_IPV4:=""}"
+: "${VPS_IPV6:=""}"
 
 # --- 前置检查 ---
 if [[ $EUID -ne 0 ]]; then
