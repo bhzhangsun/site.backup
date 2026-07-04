@@ -42,6 +42,14 @@ HY2_CERT="$CERT_DIR/hy2.pem"
 HY2_KEY="$CERT_DIR/hy2.key"
 CERT_DAYS=3650
 
+# === 探测本机出口 IP（用于生成客户端 URI） ===
+# 用 "ip route get <公网地址> 的 src" 拿真实对外的公网 IP（双网卡 VPS 也准）
+HOSTNAME_SHORT=$(hostname -s 2>/dev/null | tr -dc 'A-Za-z0-9_-' || echo "vps")
+VPS_IPV4=$(ip -4 route get 1.1.1.1 2>/dev/null \
+  | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
+VPS_IPV6=$(ip -6 route get 2606:4700:4700::1111 2>/dev/null \
+  | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
+
 # --- 前置检查 ---
 if [[ $EUID -ne 0 ]]; then
   echo "[error] 请用 root 或 sudo 执行此脚本" >&2
@@ -295,6 +303,9 @@ else
 fi
 
 # === 7. 打印客户端配置 ===
+# 把 Reality public_key 从 standard base64 转成 URL safe（v2rayN 习惯）
+REALITY_PBK_URLSAFE=$(printf '%s' "$REALITY_PUBLIC_KEY" | tr '+/' '-_' | tr -d '=')
+
 cat <<EOF
 
 [完成] sing-box 已就位：
@@ -322,15 +333,35 @@ cat <<EOF
   sni: $HY2_SERVER_NAME
   insecure: true   (因为是自签 cert)
 
+EOF
+
+# === 8. 打印 v2rayN / v2rayNG 订阅 URL（vless + hy2）×（ipv4 + ipv6）正交 ===
+# IPv6 在 URI 里用 [] 包裹；URI fragment 用 hostname + proto + af 区分 4 条
+echo "[v2rayN / v2rayNG 订阅 URL]（复制整行导入 v2rayN / v2rayNG / Nekoray / Shadowrocket）"
+if [[ -n "$VPS_IPV4" ]]; then
+  echo "  vless://${UUID}@${VPS_IPV4}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_SERVER_NAME}&fp=chrome&pbk=${REALITY_PBK_URLSAFE}&sid=${SHORT_ID_1}&type=tcp#${HOSTNAME_SHORT}-vless-v4"
+  echo "  hysteria2://${HY2_PASSWORD}@${VPS_IPV4}:443?sni=${HY2_SERVER_NAME}&insecure=1#${HOSTNAME_SHORT}-hy2-v4"
+else
+  echo "  (无 IPv4，跳过 v4 URI)"
+fi
+if [[ -n "$VPS_IPV6" ]]; then
+  echo "  vless://${UUID}@[${VPS_IPV6}]:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_SERVER_NAME}&fp=chrome&pbk=${REALITY_PBK_URLSAFE}&sid=${SHORT_ID_1}&type=tcp#${HOSTNAME_SHORT}-vless-v6"
+  echo "  hysteria2://${HY2_PASSWORD}@[${VPS_IPV6}]:443?sni=${HY2_SERVER_NAME}&insecure=1#${HOSTNAME_SHORT}-hy2-v6"
+else
+  echo "  (无 IPv6，跳过 v6 URI)"
+fi
+echo ""
+
+cat <<'EOF'
 [密钥备份]
-  客户端需要上面的值；密钥原文在 $KEYS_FILE (mode 600)
+  客户端需要上面的值；密钥原文在 /var/lib/sing-box/keys.json (mode 600)
   每台 VPS 密钥独立（防止 one compromised = all compromised）
 
 [下一步]
   1) VPS 上本地验证：
-     sing-box check -c $CONFIG_FILE
+     sing-box check -c /etc/sing-box/config.json
      systemctl status sing-box
      ss -lntu | grep ':443'
-  2) 客户端用上面的配置连一下，确认能上网
+  2) 客户端用上面的 URI 连一下，确认能上网
   3) 用 setup-nginx-site.sh 部署 nginx（如果还没跑）
 EOF
