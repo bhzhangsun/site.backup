@@ -152,9 +152,19 @@ echo "[ok] 写入 $MASQ_CONF"
 echo "[info] 验证 nginx 配置..."
 nginx -t
 
-echo "[info] reload nginx..."
-systemctl reload nginx
-echo "[ok] nginx reloaded"
+echo "[info] ensure nginx is running..."
+# nginx.org 官方 .deb 装完默认不 enable --now，reload 会因 service not active 失败。
+# 启动优先级：reload（已运行） > start（未运行） > enable --now（首次安装）。
+if systemctl is-active --quiet nginx; then
+  systemctl reload nginx
+  echo "[ok] nginx reloaded"
+else
+  systemctl enable --now nginx >/dev/null
+  echo "[ok] nginx 已 enable 并 start"
+  # 启动后再 reload 一次确保本次新配置生效
+  systemctl reload nginx
+  echo "[ok] nginx reloaded"
+fi
 
 # 探测 :8443 端口
 if ss -lnt "sport = :$FALLBACK_PORT" 2>/dev/null | grep -q LISTEN; then
