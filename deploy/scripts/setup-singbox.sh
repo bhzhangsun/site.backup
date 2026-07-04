@@ -56,7 +56,7 @@ install_sing_box() {
     fi
   fi
 
-  echo "[info] 装 sing-box（官方源）..."
+  echo "[info] 装 sing-box..."
 
   if ! command -v jq >/dev/null 2>&1; then
     apt-get update -y >/dev/null
@@ -66,19 +66,43 @@ install_sing_box() {
   apt-get install -y --no-install-recommends \
     curl ca-certificates gnupg >/dev/null
 
-  local CODENAME
+  local CODENAME ARCH
   CODENAME=$(lsb_release -cs)
+  ARCH=$(dpkg --print-architecture)
 
-  # sing-box 官方源（社区维护，1.11+）
-  curl -fsSL https://sing-box.app/gpg.key \
-    | gpg --dearmor -o /usr/share/keyrings/sing-box-archive-keyring.gpg 2>/dev/null
-
-  echo "deb [signed-by=/usr/share/keyrings/sing-box-archive-keyring.gpg] \
+  # 探测 sing-box 官方 apt 源是否可达（GFW 会屏蔽 deb.sing-box.app）
+  if curl -fsSI --max-time 5 \
+      "https://deb.sing-box.app/dists/$CODENAME/InRelease" >/dev/null 2>&1; then
+    echo "[info] 使用 sing-box 官方 apt 源..."
+    curl -fsSL https://sing-box.app/gpg.key \
+      | gpg --dearmor --yes -o /usr/share/keyrings/sing-box-archive-keyring.gpg 2>/dev/null
+    echo "deb [signed-by=/usr/share/keyrings/sing-box-archive-keyring.gpg] \
 https://deb.sing-box.app/ $CODENAME main" \
-    > /etc/apt/sources.list.d/sing-box.list
-
-  apt-get update -y >/dev/null
-  apt-get install -y --no-install-recommends sing-box >/dev/null
+      > /etc/apt/sources.list.d/sing-box.list
+    apt-get update -y >/dev/null
+    apt-get install -y --no-install-recommends sing-box >/dev/null
+  else
+    # 官方源被 GFW 屏蔽：从 GitHub release 下载 .deb 包安装
+    echo "[info] 官方源不可达，改用 GitHub release .deb..."
+    local VERSION DEB_URL TMP_DEB
+    VERSION=$(curl -fsSL --max-time 10 \
+      https://api.github.com/repos/SagerNet/sing-box/releases/latest \
+      | grep -oP '"tag_name":\s*"v\K[^"]+' | head -1)
+    if [[ -z "$VERSION" ]]; then
+      echo "[error] 无法获取 sing-box 最新版本号（GitHub API 不通？）" >&2
+      echo "        手动测试: curl -fsSI https://api.github.com" >&2
+      exit 1
+    fi
+    DEB_URL="https://github.com/SagerNet/sing-box/releases/download/v${VERSION}/sing-box_${VERSION}_linux_${ARCH}.deb"
+    TMP_DEB=$(mktemp --suffix=.deb)
+    if ! curl -fsSL --max-time 60 -o "$TMP_DEB" "$DEB_URL"; then
+      rm -f "$TMP_DEB"
+      echo "[error] 下载失败: $DEB_URL" >&2
+      exit 1
+    fi
+    apt-get install -y "$TMP_DEB" >/dev/null
+    rm -f "$TMP_DEB"
+  fi
 
   echo "[ok] 已安装 $(sing-box version 2>/dev/null | awk '{print $3}')"
 }
