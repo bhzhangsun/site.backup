@@ -144,6 +144,13 @@ if [[ -f "$KEYS_FILE" && "$FORCE_REGEN_KEYS" != "1" ]]; then
   echo "[ok] 密钥文件已存在: $KEYS_FILE"
   echo "    (用 FORCE_REGEN_KEYS=1 重新生成，警告：所有客户端会失效)"
 
+  # 防御：清掉 config 目录里残留的旧 keys.json（sing-box 1.13+ -C 扫描会把它当 config 加载）
+  # 老版本脚本把 keys.json 写在 /etc/sing-box/，迁移路径后若残留会让 sing-box 启动 FATAL
+  if [[ -f "$SING_BOX_DIR/keys.json" ]]; then
+    echo "[info] 清掉残留的 $SING_BOX_DIR/keys.json（避免被 sing-box 1.13 当 config 加载）"
+    rm -f "$SING_BOX_DIR/keys.json"
+  fi
+
   if ! command -v jq >/dev/null 2>&1; then
     echo "[error] 需要 jq 来解析 $KEYS_FILE" >&2
     exit 1
