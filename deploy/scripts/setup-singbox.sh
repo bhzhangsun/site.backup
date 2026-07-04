@@ -254,8 +254,8 @@ cat > "$CONFIG_FILE" <<EOF
       },
       "masquerade": {
         "type": "proxy",
-        "server": "$MASQ_PROXY_ADDR",
-        "server_port": $MASQ_PROXY_PORT
+        "url": "http://$MASQ_PROXY_ADDR:$MASQ_PROXY_PORT",
+        "rewrite_host": true
       }
     }
   ],
