@@ -68,17 +68,17 @@ deploy/
 VPS 上**以 root 登录**后执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-deploy-user.sh | sudo bash
+wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-deploy-user.sh | bash
 ```
 
 可选覆盖（一般不用）：
 
 ```bash
 # 自定义部署路径
-curl -fsSL https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-deploy-user.sh | sudo DEPLOY_PATH=/var/www/nestseeker.xyz bash
+wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-deploy-user.sh | DEPLOY_PATH=/var/www/nestseeker.xyz bash
 
 # 临时换 SSH 公钥
-curl -fsSL https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-deploy-user.sh | sudo SSH_PUBKEY="ssh-ed25519 AAAA..." bash
+wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-deploy-user.sh | SSH_PUBKEY="ssh-ed25519 AAAA..." bash
 ```
 
 > **不要让脚本读本机 `hosts.json`** — 脚本在 VPS 上跑，VPS 没有仓库里的 `hosts.json`。
@@ -88,16 +88,16 @@ curl -fsSL https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/
 
 ### 2. ② 装 nginx
 
-继续以 root 登录（`①` 已配置 root 不变，也可用 deploy + sudo）：
+继续以 root 登录：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-nginx-site.sh | sudo bash
+wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-nginx-site.sh | bash
 ```
 
 可选覆盖（一般不用动）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-nginx-site.sh | sudo FALLBACK_PORT=8443 MASQ_PORT=8080 MASQ_DOC_ROOT=/var/www/nestseeker.xyz bash
+wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-nginx-site.sh | FALLBACK_PORT=8443 MASQ_PORT=8080 MASQ_DOC_ROOT=/var/www/nestseeker.xyz bash
 ```
 
 **本地验证**：
@@ -111,13 +111,13 @@ ss -lnt | grep -E ':(8443|8080)'   # 两个端口都应在 LISTEN
 ### 3. ③ 装 sing-box
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-singbox.sh | sudo bash
+wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-singbox.sh | bash
 ```
 
 可选覆盖（默认就够用）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-singbox.sh | sudo REALITY_HANDSHAKE_SERVER=www.tesla.com REALITY_SERVER_NAME=nestseeker.xyz HY2_SERVER_NAME=nestseeker.xyz bash
+wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-singbox.sh | REALITY_HANDSHAKE_SERVER=www.tesla.com REALITY_SERVER_NAME=nestseeker.xyz HY2_SERVER_NAME=nestseeker.xyz bash
 ```
 
 **脚本末尾会打印客户端配置**，包含：
@@ -167,14 +167,14 @@ insecure=true
 
 ## 日常维护
 
-- **重启服务**：`sudo systemctl restart sing-box` / `sudo systemctl reload nginx`
-- **查看日志**：`sudo journalctl -u sing-box -n 100 --no-pager`
+- **重启服务**：`systemctl restart sing-box` / `systemctl reload nginx`
+- **查看日志**：`journalctl -u sing-box -n 100 --no-pager`
 - **重置密钥**（警告：所有客户端失效）：
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-singbox.sh | sudo FORCE_REGEN_KEYS=1 bash
+  wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-singbox.sh | FORCE_REGEN_KEYS=1 bash
   ```
 - **重置 cert**：
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-singbox.sh | sudo FORCE_REGEN_CERT=1 bash
+  wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-singbox.sh | FORCE_REGEN_CERT=1 bash
   ```
 - **首次部署 Hugo 内容**：`gh workflow run deploy.yml`（GitHub Actions，依赖 `hosts.json`）
