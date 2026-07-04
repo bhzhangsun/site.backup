@@ -11,6 +11,6 @@
     "host": "212.135.42.43",
     "user": "deploy",
     "port": 24743,
-    "path": "/var/www/html"
+    "path": "/var/www/nestseeker.xyz"
   }
 ]

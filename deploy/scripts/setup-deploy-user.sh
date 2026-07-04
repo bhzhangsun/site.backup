@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # 在 VPS 上以 root 权限执行：创建 deploy 用户、配置 SSH 公钥登录、配置 sudo 免密码
-# 可选：DEPLOY_PATH=/your/path  指定部署目录（默认 /var/www/html），会 chown 给新用户
+# 可选：DEPLOY_PATH=/your/path  指定部署目录（默认 /var/www/nestseeker.xyz），会 chown 给新用户
 # 不修改 sshd，不影响其他账户。
 #
 # 用法：sudo ./setup-deploy-user.sh [username]
 #       username  可选，默认 deploy
 #       SSH_PUBKEY=... 可临时覆盖脚本内嵌的公钥
+#       DEPLOY_PATH=... 可临时覆盖默认部署路径
 
 set -euo pipefail
 
@@ -68,12 +69,16 @@ visudo -c -f "$SUDOERS_FILE" >/dev/null
 echo "[ok] 已配置 sudo 免密码（$SUDOERS_FILE）"
 
 # 4. 部署目录所有权（让 deploy 用户对部署路径可写）
-DEPLOY_PATH="${DEPLOY_PATH:-/var/www/html}"
+# 默认 /var/www/nestseeker.xyz 跟 deploy/hosts.json 对齐；可被 DEPLOY_PATH 覆盖
+DEPLOY_PATH="${DEPLOY_PATH:-/var/www/nestseeker.xyz}"
 if [[ -d "$DEPLOY_PATH" ]]; then
   chown -R "$USERNAME:$USERNAME" "$DEPLOY_PATH"
   echo "[ok] 已将 $DEPLOY_PATH 所有权交给 $USERNAME"
 else
-  echo "[warn] $DEPLOY_PATH 不存在；可后续手动执行：sudo mkdir -p $DEPLOY_PATH && sudo chown $USERNAME:$USERNAME $DEPLOY_PATH"
+  echo "[warn] $DEPLOY_PATH 不存在，将自动创建"
+  mkdir -p "$DEPLOY_PATH"
+  chown -R "$USERNAME:$USERNAME" "$DEPLOY_PATH"
+  echo "[ok] 已创建 $DEPLOY_PATH 并 chown 给 $USERNAME"
 fi
 
 # 5. 部署依赖：rsync（workflow 走 rsync 协议做增量同步与 --delete）
