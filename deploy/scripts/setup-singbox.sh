@@ -10,7 +10,6 @@
 # 可选环境变量：
 #   REALITY_HANDSHAKE_SERVER=www.tesla.com
 #   REALITY_HANDSHAKE_PORT=443
-#   REALITY_SERVER_NAME=nestseeker.xyz
 #   HY2_SERVER_NAME=nestseeker.xyz
 #   HY2_CERT_CN=nestseeker.xyz
 #   MASQ_PROXY_ADDR=127.0.0.1
@@ -26,7 +25,8 @@ trap 'echo "[FATAL] interrupted line $LINENO" >&2' INT TERM
 # === 默认值 ===
 REALITY_HANDSHAKE_SERVER="${REALITY_HANDSHAKE_SERVER:-www.tesla.com}"
 REALITY_HANDSHAKE_PORT="${REALITY_HANDSHAKE_PORT:-443}"
-REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-nestseeker.xyz}"
+# Reality 协议硬约束：客户端 SNI 必须 = HANDSHAKE_SERVER（cert 是 dest 的，SNI 错就 cert 验证失败）
+# 所以这里没有独立的 SERVER_NAME 变量，直接用 HANDSHAKE_SERVER
 HY2_SERVER_NAME="${HY2_SERVER_NAME:-nestseeker.xyz}"
 HY2_CERT_CN="${HY2_CERT_CN:-nestseeker.xyz}"
 MASQ_PROXY_ADDR="${MASQ_PROXY_ADDR:-127.0.0.1}"
@@ -325,7 +325,7 @@ REALITY_PBK_URLSAFE=$(printf '%s' "$REALITY_PUBLIC_KEY" | tr '+/' '-_' | tr -d '
 cat <<EOF
 
 [完成] sing-box 已就位：
-  - Reality (TCP:443) : UUID=$UUID, SNI=$REALITY_SERVER_NAME, dest=$REALITY_HANDSHAKE_SERVER
+  - Reality (TCP:443) : UUID=$UUID, SNI=$REALITY_HANDSHAKE_SERVER, dest=$REALITY_HANDSHAKE_SERVER
   - HY2     (UDP:443) : SNI=$HY2_SERVER_NAME, CN=$HY2_CERT_CN
   - masq     : $MASQ_PROXY_ADDR:$MASQ_PROXY_PORT (HY2 失败时 → nginx 8080)
   - (Reality 失败探测者：sing-box 直接 reset，无 fallback)
@@ -338,7 +338,7 @@ cat <<EOF
   type: vless
   uuid: $UUID
   flow: xtls-rprx-vision
-  serverName: $REALITY_SERVER_NAME
+  serverName: $REALITY_HANDSHAKE_SERVER
   publicKey: $REALITY_PUBLIC_KEY
   shortId: $SHORT_ID_1
   network: tcp
@@ -355,14 +355,14 @@ EOF
 # IPv6 在 URI 里用 [] 包裹；URI fragment 用 hostname + proto + af 区分 4 条
 echo "[v2rayN / v2rayNG 订阅 URL]（复制整行导入 v2rayN / v2rayNG / Nekoray / Shadowrocket）"
 if [[ -n "$VPS_IPV4" ]]; then
-  echo "  vless://${UUID}@${VPS_IPV4}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_SERVER_NAME}&fp=chrome&pbk=${REALITY_PBK_URLSAFE}&sid=${SHORT_ID_1}&type=tcp#${HOSTNAME_SHORT}-vless-v4"
-  echo "  hysteria2://${HY2_PASSWORD}@${VPS_IPV4}:443?sni=${HY2_SERVER_NAME}&insecure=1#${HOSTNAME_SHORT}-hy2-v4"
+  echo "  vless://${UUID}@${VPS_IPV4}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_HANDSHAKE_SERVER}&fp=chrome&pbk=${REALITY_PBK_URLSAFE}&sid=${SHORT_ID_1}&type=tcp#${HOSTNAME_SHORT}-vless-v4"
+  echo "  hysteria2://${HY2_PASSWORD}@${VPS_IPV4}:443?sni=${HY2_SERVER_NAME}&insecure=true#${HOSTNAME_SHORT}-hy2-v4"
 else
   echo "  (无 IPv4，跳过 v4 URI)"
 fi
 if [[ -n "$VPS_IPV6" ]]; then
-  echo "  vless://${UUID}@[${VPS_IPV6}]:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_SERVER_NAME}&fp=chrome&pbk=${REALITY_PBK_URLSAFE}&sid=${SHORT_ID_1}&type=tcp#${HOSTNAME_SHORT}-vless-v6"
-  echo "  hysteria2://${HY2_PASSWORD}@[${VPS_IPV6}]:443?sni=${HY2_SERVER_NAME}&insecure=1#${HOSTNAME_SHORT}-hy2-v6"
+  echo "  vless://${UUID}@[${VPS_IPV6}]:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_HANDSHAKE_SERVER}&fp=chrome&pbk=${REALITY_PBK_URLSAFE}&sid=${SHORT_ID_1}&type=tcp#${HOSTNAME_SHORT}-vless-v6"
+  echo "  hysteria2://${HY2_PASSWORD}@[${VPS_IPV6}]:443?sni=${HY2_SERVER_NAME}&insecure=true#${HOSTNAME_SHORT}-hy2-v6"
 else
   echo "  (无 IPv6，跳过 v6 URI)"
 fi
