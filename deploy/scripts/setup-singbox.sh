@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 在 VPS 上以 root 权限执行：装 sing-box（1.11+），
-# 写 /etc/sing-box/config.json（Reality + HY2 共用 443），
+# 写 /etc/sing-box/config.json（Reality TCP:443 + HY2 UDP:8443），
 # 生成所有密钥（UUID / Reality keypair / shortId / HY2 password），
 # 自签 HY2 cert（CN=nestseeker.xyz），
 # 启动 systemd service。
@@ -29,6 +29,10 @@ REALITY_HANDSHAKE_PORT="${REALITY_HANDSHAKE_PORT:-443}"
 # 所以这里没有独立的 SERVER_NAME 变量，直接用 HANDSHAKE_SERVER
 HY2_SERVER_NAME="${HY2_SERVER_NAME:-nestseeker.xyz}"
 HY2_CERT_CN="${HY2_CERT_CN:-nestseeker.xyz}"
+# HY2 硬约束（设计决定，不要改）：
+#   listen = ::     IPv4+IPv6 dual stack，与 vless inbound 一致
+#   port  = 8443    sing-box 1.11+ 同端口多 inbound 共享时 UDP sniff 失败，
+#                   hysteria2 裸 QUIC 不带 ALPN 会被静默丢包 → 必须独立端口
 MASQ_PROXY_ADDR="${MASQ_PROXY_ADDR:-127.0.0.1}"
 MASQ_PROXY_PORT="${MASQ_PROXY_PORT:-8080}"
 FORCE_REGEN_KEYS="${FORCE_REGEN_KEYS:-0}"
@@ -227,8 +231,7 @@ fi
 # === 5. 写 sing-box config.json ===
 # 关键设计：
 #   - Reality 监听 TCP:443（vless + reality）
-#   - HY2     监听 UDP:443（hysteria2）
-#   sing-box 内部自动区分 TCP/UDP，同一端口不冲突
+#   - HY2     监听 UDP:8443（hysteria2，独立端口避免同端口 UDP sniff 失败）
 #   - Reality 失败（短 ID 验证失败）→ sing-box 直接关连接（不配 fallback：探测者被 reset）
 #   - HY2 失败（非 HY2 客户端）    → masquerade proxy 到 127.0.0.1:8080 (nginx)
 echo "[info] 写入 $CONFIG_FILE"
@@ -268,7 +271,7 @@ cat > "$CONFIG_FILE" <<EOF
     {
       "type": "hysteria2",
       "listen": "::",
-      "listen_port": 443,
+      "listen_port": 8443,
       "users": [
         {
           "name": "default",
@@ -325,8 +328,8 @@ REALITY_PBK_URLSAFE=$(printf '%s' "$REALITY_PUBLIC_KEY" | tr '+/' '-_' | tr -d '
 cat <<EOF
 
 [完成] sing-box 已就位：
-  - Reality (TCP:443) : UUID=$UUID, SNI=$REALITY_HANDSHAKE_SERVER, dest=$REALITY_HANDSHAKE_SERVER
-  - HY2     (UDP:443) : SNI=$HY2_SERVER_NAME, CN=$HY2_CERT_CN
+  - Reality (TCP:443)    : UUID=$UUID, SNI=$REALITY_HANDSHAKE_SERVER, dest=$REALITY_HANDSHAKE_SERVER
+  - HY2     (UDP:8443)           : SNI=$HY2_SERVER_NAME, CN=$HY2_CERT_CN
   - masq     : $MASQ_PROXY_ADDR:$MASQ_PROXY_PORT (HY2 失败时 → nginx 8080)
   - (Reality 失败探测者：sing-box 直接 reset，无 fallback)
 
@@ -356,13 +359,13 @@ EOF
 echo "[v2rayN / v2rayNG 订阅 URL]（复制整行导入 v2rayN / v2rayNG / Nekoray / Shadowrocket）"
 if [[ -n "$VPS_IPV4" ]]; then
   echo "  vless://${UUID}@${VPS_IPV4}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_HANDSHAKE_SERVER}&fp=chrome&pbk=${REALITY_PBK_URLSAFE}&sid=${SHORT_ID_1}&type=tcp#${HOSTNAME_SHORT}-vless-v4"
-  echo "  hysteria2://${HY2_PASSWORD}@${VPS_IPV4}:443?sni=${HY2_SERVER_NAME}&insecure=true#${HOSTNAME_SHORT}-hy2-v4"
+  echo "  hysteria2://${HY2_PASSWORD}@${VPS_IPV4}:8443?sni=${HY2_SERVER_NAME}&insecure=true#${HOSTNAME_SHORT}-hy2-v4"
 else
   echo "  (无 IPv4，跳过 v4 URI)"
 fi
 if [[ -n "$VPS_IPV6" ]]; then
   echo "  vless://${UUID}@[${VPS_IPV6}]:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_HANDSHAKE_SERVER}&fp=chrome&pbk=${REALITY_PBK_URLSAFE}&sid=${SHORT_ID_1}&type=tcp#${HOSTNAME_SHORT}-vless-v6"
-  echo "  hysteria2://${HY2_PASSWORD}@[${VPS_IPV6}]:443?sni=${HY2_SERVER_NAME}&insecure=true#${HOSTNAME_SHORT}-hy2-v6"
+  echo "  hysteria2://${HY2_PASSWORD}@[${VPS_IPV6}]:8443?sni=${HY2_SERVER_NAME}&insecure=true#${HOSTNAME_SHORT}-hy2-v6"
 else
   echo "  (无 IPv6，跳过 v6 URI)"
 fi
@@ -377,7 +380,7 @@ cat <<'EOF'
   1) VPS 上本地验证：
      sing-box check -c /etc/sing-box/config.json
      systemctl status sing-box
-     ss -lntu | grep ':443'
+     ss -lntu | grep -E ':(443|8443)\s'
   2) 客户端用上面的 URI 连一下，确认能上网
   3) 用 setup-nginx-site.sh 部署 nginx（如果还没跑）
 EOF
