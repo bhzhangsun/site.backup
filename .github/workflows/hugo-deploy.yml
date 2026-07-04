@@ -1,6 +1,6 @@
 name: Build & Deploy me.noir
 
-# 触发：push 到 main，只关心站点文件 / workflow / 部署脚本（不含部署配置，配置走 GitHub Variables/Secrets）
+# 触发：push 到 main 且只关心站点文件 / workflow / 部署清单 / submodule 引用
 on:
   push:
     branches: [main]
@@ -17,7 +17,7 @@ on:
       - 'assets/**'
       - '.gitignore'
       - '.gitmodules'
-      - 'deploy/scripts/**'
+      - 'deploy/**'
       - '.github/workflows/**'
   workflow_dispatch:
     inputs:
@@ -31,6 +31,7 @@ permissions:
   contents: read
 
 env:
+  # 默认版本号，作为 inputs.hugo_version 为空时的回退
   HUGO_VERSION_DEFAULT: '0.147.0'
 
 jobs:
@@ -47,6 +48,7 @@ jobs:
 
       - name: Setup Hugo (extended)
         env:
+          # 在 step 级 env 里引用工作流级 env.HUGO_VERSION_DEFAULT 是允许的
           HUGO_VERSION: ${{ github.event.inputs.hugo_version || env.HUGO_VERSION_DEFAULT }}
         uses: peaceiris/actions-hugo@v3
         with:
@@ -75,28 +77,22 @@ jobs:
           if-no-files-found: error
 
   set-matrix:
-    # 部署目标配置走 GitHub Variable (DEPLOY_HOSTS_JSON)，不入仓。
-    # 格式: JSON 数组，每项 { name, host, user, port, path }。
     name: Read host list
     needs: build
     runs-on: ubuntu-latest
     outputs:
       hosts: ${{ steps.read.outputs.hosts }}
     steps:
-      - name: Load DEPLOY_HOSTS_JSON
+      - uses: actions/checkout@v4
+      - name: Load deploy/hosts.json
         id: read
-        env:
-          HOSTS_JSON: ${{ vars.DEPLOY_HOSTS_JSON }}
         run: |
           set -euo pipefail
-          if [[ -z "${HOSTS_JSON:-}" ]]; then
-            echo "::error::vars.DEPLOY_HOSTS_JSON is empty. Set it in Settings → Variables → Actions (repository or environment 'production')."
-            exit 1
-          fi
-          echo "$HOSTS_JSON" | jq -e 'type == "array" and length > 0' >/dev/null
+          jq -e 'type == "array" and length > 0' deploy/hosts.json
+          # GITHUB_OUTPUT 要求 key=value 或 key<<EOF\nvalue\nEOF 格式
           {
             echo "hosts<<EOF"
-            echo "$HOSTS_JSON" | jq -c '{hosts: .}'
+            jq -c '{hosts: .}' deploy/hosts.json
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -106,6 +102,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: production
+    # 按机器拆并发组：同机器多次 push 串行；不同机器互不阻塞
     concurrency:
       group: deploy-me.noir-${{ matrix.host.name }}
       cancel-in-progress: false
@@ -114,6 +111,15 @@ jobs:
       matrix:
         host: ${{ fromJSON(needs.set-matrix.outputs.hosts).hosts }}
     steps:
+      # sparse-checkout deploy/ 拿 known_hosts；同时 download artifact。
+      # 注意：必须在 download artifact 之前完成 checkout，
+      # 否则会被 artifact 覆盖导致 deploy/known_hosts 丢失。
+      - name: Checkout (sparse, for deploy/known_hosts)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: deploy
+          fetch-depth: 1
+
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
@@ -146,18 +152,16 @@ jobs:
           fi
 
       - name: Add known hosts
-        # 主机指纹走 GitHub Secret (DEPLOY_KNOWN_HOSTS)，不入仓。
-        # 格式: 标准 OpenSSH known_hosts 文本，可直接来自 ssh-keyscan。
-        env:
-          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
-          if [[ -z "${KNOWN_HOSTS:-}" ]]; then
-            echo "::error::secrets.DEPLOY_KNOWN_HOSTS is empty. Set it in Settings → Secrets and variables → Actions."
+          # deploy/known_hosts 入仓：与代码一起走，diff 友好、PR 友好，
+          # 无 GitHub Secret 缓存 / 复制粘贴导致的 known_hosts 不一致风险。
+          if [[ ! -s deploy/known_hosts ]]; then
+            echo "::error::deploy/known_hosts is empty or missing."
             exit 1
           fi
           mkdir -p ~/.ssh
-          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cp deploy/known_hosts ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
           echo "--- hosts in known_hosts (first column) ---"
           awk 'NF && $1 !~ /^#/{print "  →", $1}' ~/.ssh/known_hosts
@@ -195,10 +199,7 @@ jobs:
             echo "  server : $LIVE"
             echo "  file   : $FILE"
             echo ""
-            echo "VPS host key has rotated. Fix:"
-            echo "  ssh-keyscan -p $PORT -T 8 $HOST | grep ' ssh-ed25519 '"
-            echo "  # 注意端口格式: 默认 22 用裸 host; 自定义端口用 [host]:PORT"
-            echo "  # 然后把结果粘到 Settings → Secrets → DEPLOY_KNOWN_HOSTS"
+            echo "VPS host key has rotated. Fix: see comments in deploy/known_hosts for sed pipeline."
             exit 1
           fi
 

@@ -10,7 +10,3 @@ resources/
 *.swp
 .idea/
 .vscode/
-
-# deploy runtime config（IP/port/user/path 与 SSH 主机指纹走 GitHub Variables/Secrets）
-deploy/known_hosts
-deploy/hosts.json

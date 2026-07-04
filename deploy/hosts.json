@@ -1,0 +1,16 @@
+[
+  {
+    "name": "my-vps",
+    "host": "45.134.36.142",
+    "user": "deploy",
+    "port": 22,
+    "path": "/var/www/nestseeker.xyz"
+  },
+  {
+    "name": "uk-vps",
+    "host": "212.135.42.43",
+    "user": "deploy",
+    "port": 24743,
+    "path": "/var/www/html"
+  }
+]
