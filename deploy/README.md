@@ -10,8 +10,8 @@ deploy/
 ├── known_hosts             # SSH 主机指纹
 └── scripts/
     ├── setup-deploy-user.sh   # ① 创建 deploy 用户 + SSH 公钥 + sudo 免密
-    ├── setup-nginx-site.sh    # ② nginx mainline + :80 HTTP + :443 HTTPS + :8443 UDP h3
-    └── setup-singbox.sh       # ③ sing-box 1.11+ + trojan reality :2053 + vless reality :1443 + hy2 UDP:443
+    ├── setup-nginx-site.sh    # ② nginx mainline + :80 HTTP + :443 TCP/UDP (h2 + h3 共 listen)
+    └── setup-singbox.sh       # ③ sing-box 1.11+ + trojan reality :2053 + vless reality :1443 + hy2 UDP:8443
 ```
 
 ## 执行顺序
@@ -24,15 +24,16 @@ deploy/
    │
    ▼
 ② setup-nginx-site.sh
-   │  装 nginx mainline、写 :80 HTTP + :443 HTTPS (h2/h1.1) + :8443 UDP h3
-   │  （:80 = 直访 + hy2 masq；:443 = 标准 https 站点；:8443 = h3 升级目标）
-   │  :443 / :8443 缺 cert 时脚本内 openssl 自签兜底（CN/SAN=nestseeker.xyz，10 年）
+   │  装 nginx mainline、写 :80 HTTP + :443 TCP+UDP (h2 + h3 同 server block)
+   │  （:80 = 直访 + hy2 masq；:443 TCP = 标准 https 站点；:443 UDP = h3 升级目标；Alt-Svc 头无端口写法 h3=":443"）
+   │  :443 缺 cert 时脚本内 openssl 自签兜底（CN/SAN=nestseeker.xyz，10 年）
    │  跑通后用 acme.sh 申请真实 cert，直接覆盖脚本 env 指定的路径即可
    │
    ▼
 ③ setup-singbox.sh
    │  装 sing-box、生成 Reality/HY2 密钥、自签 HY2 cert、写 systemd
-   │  trojan reality 监听 :2053（错开 443，让 nginx 拿到 443 TCP）
+   │  trojan reality 监听 :2053、vless reality :1443、HY2 监听 UDP:8443
+   │  （HY2 错开 443：443 TCP/UDP 整组给 nginx h2 + h3）
    │
    ▼
 [完] 客户端用脚本末尾打印的配置连接
@@ -44,20 +45,21 @@ deploy/
 |---|---|---|---|
 | `:80`    | TCP    | nginx              | Hugo 静态站（直接访问 + hy2 masq 探测者伪装目标；带 Alt-Svc 引导 h3） |
 | `:443`   | TCP    | nginx (h2/h1.1)    | nestseeker.xyz https 站点（自签兜底，acme.sh 可升级） + Alt-Svc 源 |
-| `:443`   | UDP    | sing-box **hy2**   | 代理客户端；非 hy2 客户端 → masq → :80 |
+| `:443`   | UDP    | nginx (h3/QUIC)    | 浏览器 Alt-Svc 升级后的 h3 目标（跟 TCP 443 同 server block，共享 cert） |
 | `:1443`  | TCP    | sing-box **vless** + reality | 备用入口；短 ID 错 → reality 透明转发 dest（反探测稍强） |
 | `:2053`  | TCP    | sing-box **trojan** + reality | 主入口；短 ID 错 → reality 透明转发 dest（端口故意错开 443，让 nginx 拿到） |
-| `:8443`  | UDP    | nginx (h3)         | 浏览器 Alt-Svc 升级后的 h3 目标（QUIC，跟 443 共享 cert） |
+| `:8443`  | UDP    | sing-box **hy2**   | 代理客户端；非 hy2 客户端 → masq → :80 |
 
 **关键路由**：
-- 浏览器 `https://nestseeker.xyz/` → TCP 443 nginx h2（直接命中，**不经过 sing-box**）→ 响应带 `Alt-Svc: h3=":8443"`
-- 浏览器第二次访问 → happy-eyeballs 升级到 UDP 8443 nginx h3
+- 浏览器 `https://nestseeker.xyz/` → TCP 443 nginx h2（直接命中，**不经过 sing-box**）→ 响应带 `Alt-Svc: h3=":443"`
+- 浏览器第二次访问 → happy-eyeballs 升级到 UDP 443 nginx h3（同 listen 端口，QUIC 自动接管）
 - 探测者 SNI=tesla.com → 连 :2053 trojan 验证失败 → reality 透明转发到真实 tesla.com:443（反探测保留）
 - 备用入口：客户端连 `vps:1443` 走 vless+reality（无 fallback 暴露面，更"沉默"）
 
-**为什么 trojan 不在 443**：
-- 443 TCP 让给 nginx 跑 nestseeker.xyz 真实 https（标准端口，浏览器默认）
-- 443 UDP 让给 sing-box HY2（占用，与 nginx h3 抢不到）
+**为什么 443 TCP/UDP 整组给 nginx**：
+- 主流部署模式：Cloudflare / Caddy / LiteSpeed / Apache 2.4.49+ 都在 443 同时跑 h2(TCP) + h3(UDP)
+- Alt-Svc 头用无端口写法 `h3=":443"` 是 Chrome 首选（带端口写法 `:8443` 是 fallback 方案）
+- 443 UDP 不再归 sing-box HY2：HY2 改 8443 UDP 错开
 - trojan reality 监听 :2053（非标但够冷门；客户端配 2053 即可）
 - vless 备用入口仍在 :1443（sing-box 同端口只能一个 inbound listen）
 
@@ -77,7 +79,7 @@ deploy/
 | **nginx HTTPS cert**（h2 + h3 共用） | `setup-nginx-site.sh` 自签兜底（CN/SAN=`nestseeker.xyz`，10 年） | 脚本内 `openssl req -x509` | `/etc/sing-box/certs/nestseeker.xyz.{fullchain,key}.pem`（env 可覆盖） | 浏览器（h2/h3 真实 TLS 握手） |
 | **HY2 自签 cert** | `setup-singbox.sh` 自签（CN=`nestseeker.xyz`） | 脚本内 `openssl req -x509` | `/etc/sing-box/certs/hy2.pem` + `.key` | HY2 客户端（验证 CN == SNI） |
 
-**自签 cert 能不能用？** 能，握手能通。**能跑通**就够了。浏览器会报「NET::ERR_CERT_AUTHORITY_INVALID」红屏（自签 cert 不在系统信任链），但 `:443` 的实际响应能验证、`:8443` 的 Alt-Svc 升级逻辑能跑通。
+**自签 cert 能不能用？** 能，握手能通。**能跑通**就够了。浏览器会报「NET::ERR_CERT_AUTHORITY_INVALID」红屏（自签 cert 不在系统信任链），但 `:443` 的实际响应能验证、h3 升级逻辑能跑通（自签阶段 h3 不会被浏览器真正启用，要等 acme.sh 真实 cert 上后才能看到 h3 协议列）。
 
 **跑通后升级成真实 cert**：用 acme.sh 申请 `nestseeker.xyz`，把产物覆盖到 nginx HTTPS cert 路径即可（**不需要改 nginx 配置**，env 默认路径就是 acme.sh `--install-cert` 的输出位置）：
 
@@ -142,14 +144,14 @@ wget -qO- "https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/
 wget -qO- "https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-nginx-site.sh?t=$(date +%s)" | MASQ_PORT=80 MASQ_DOC_ROOT=/var/www/nestseeker.xyz bash
 ```
 
-> :443 / :8443 缺 cert 时脚本内 openssl 自签兜底，浏览器会红屏但能握手。跑通后用 acme.sh 申请真实 cert 覆盖默认路径即可（见上方 SSL 章节）。
+> :443 缺 cert 时脚本内 openssl 自签兜底，浏览器会红屏但能握手。跑通后用 acme.sh 申请真实 cert 覆盖默认路径即可（见上方 SSL 章节）。
 
 **本地验证**：
 
 ```bash
-curl -I  http://127.0.0.1:80         # Hugo plain HTTP（响应头含 Alt-Svc: h3=":8443"）
-curl -kI https://127.0.0.1:443/      # HTTPS（响应头含 Alt-Svc: h3=":8443"）
-ss -lntu | grep -E ':(80|443|8443)\s'  # 应看到 :80 tcp + :443 tcp + :8443 udp
+curl -I  http://127.0.0.1:80         # Hugo plain HTTP（响应头含 Alt-Svc: h3=":443"）
+curl -kI https://127.0.0.1:443/      # HTTPS（响应头含 Alt-Svc: h3=":443"）
+ss -lntu | grep -E ':(80|443)\s'      # 应看到 :80 tcp + :443 tcp + :443 udp（h2 + h3 同 listen）
 ```
 
 ### 3. ③ 装 sing-box
@@ -167,14 +169,14 @@ wget -qO- "https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/
 **脚本末尾会打印客户端配置**，包含：
 - Reality Trojan: `password`(=UUID) / `publicKey` / `shortId` / SNI（TCP:**2053**，主入口）
 - Reality Vless: `uuid` / `publicKey` / `shortId` / SNI（TCP:1443，备用入口）
-- HY2: `password` / SNI（UDP:443）
+- HY2: `password` / SNI（UDP:8443）
 
 **本地验证**：
 
 ```bash
 sing-box check -c /etc/sing-box/config.json
 systemctl status sing-box
-ss -lntu | grep -E ':(443|1443|2053)\s'   # 应看到 :443 udp (hy2) + :1443 tcp (vless) + :2053 tcp (trojan) 都 LISTEN
+ss -lntu | grep -E ':(8443|1443|2053)\s'   # 应看到 :8443 udp (hy2) + :1443 tcp (vless) + :2053 tcp (trojan) 都 LISTEN
 ```
 
 ### 4. 客户端连接
@@ -201,7 +203,7 @@ shortId=<...>
 network=tcp
 
 [HY2]
-type=hysteria2, port=443
+type=hysteria2, port=8443
 password=<...>
 sni=nestseeker.xyz
 insecure=true

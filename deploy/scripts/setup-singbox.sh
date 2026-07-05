@@ -5,7 +5,8 @@
 #                                  handshake_server；端口错开 443 让出给 nginx https/h3）
 #   - Reality Vless  TCP:1443 vless + reality（备用入口，无 fallback；
 #                                  短 ID 错 → reality 透明转发 handshake_server）
-#   - HY2            UDP:443  hysteria2（非 hy2 客户端 → masq → http://127.0.0.1:80 nginx）
+#   - HY2            UDP:8443 hysteria2（非 hy2 客户端 → masq → http://127.0.0.1:80 nginx）
+#                                  8443 错开 443：443 TCP/UDP 整组让给 nginx serve https + h3
 # 生成所有密钥（UUID / Reality keypair / shortId / HY2 password），
 # 自签 HY2 cert（CN=nestseeker.xyz），
 # 启动 systemd service。
@@ -38,10 +39,10 @@ HY2_SERVER_NAME="${HY2_SERVER_NAME:-nestseeker.xyz}"
 HY2_CERT_CN="${HY2_CERT_CN:-nestseeker.xyz}"
 # HY2 硬约束（设计决定，不要改）：
 #   listen = ::     IPv4+IPv6 dual stack
-#   port  = 443     独立 UDP 端口；443 TCP 让给 nginx serve https 站点 + h3 Alt-Svc 源
-#                   HY2 与 443 TCP 互不干扰（协议不同：UDP vs TCP，socket 独立）
+#   port  = 8443    独立 UDP 端口；443 TCP/UDP 整组让给 nginx（h2 + h3 共占）
+#                   HY2 与 443 互不干扰（端口不同：8443 vs 443，socket 独立）
 TROJAN_PORT="${TROJAN_PORT:-2053}"
-# Trojan reality 监听端口：故意错开 443（443 TCP/UDP 已分别给 nginx https / HY2）
+# Trojan reality 监听端口：故意错开 443（443 TCP/UDP 整组归 nginx h2+h3）
 # sing-box 1.13 同一 inbound 不支持同端口 listen（vless 1443 也是这个原因）
 VLESS_PORT="${VLESS_PORT:-1443}"
 MASQ_PROXY_ADDR="${MASQ_PROXY_ADDR:-127.0.0.1}"
@@ -248,7 +249,7 @@ fi
 #   - Vless+Reality 监听 TCP:$VLESS_PORT（备用入口，IPv6 dual stack）
 #       · sing-box 1.13 vless 不支持 fallback，且同端口两个 inbound 冲突 → 必须独立端口
 #       · 短 ID 错 → reality 透明转发到 handshake_server（反探测，无 fallback 弱点）
-#   - HY2 监听 UDP:443（hysteria2，与 443 TCP 的 nginx https 共享 IPv6 dual stack）
+#   - HY2 监听 UDP:8443（hysteria2，独立端口；443 UDP 已归 nginx h3）
 #   - HY2 失败（非 HY2 客户端）→ masquerade proxy → http://127.0.0.1:80 (nginx http)
 #
 # 关键选择：trojan 与 vless 共用同一 Reality keypair + short_id
@@ -317,7 +318,7 @@ cat > "$CONFIG_FILE" <<EOF
     {
       "type": "hysteria2",
       "listen": "::",
-      "listen_port": 443,
+      "listen_port": 8443,
       "users": [
         {
           "name": "default",
@@ -378,7 +379,7 @@ cat <<EOF
                                  短 ID 错 → reality 透明转发到真实 $REALITY_HANDSHAKE_SERVER
   - Reality Vless  (TCP:$VLESS_PORT) : UUID, SNI=$REALITY_HANDSHAKE_SERVER, dest=$REALITY_HANDSHAKE_SERVER
                                  短 ID 错 → reality 透明转发到真实 $REALITY_HANDSHAKE_SERVER（无 fallback，反探测更收敛）
-  - HY2            (UDP:443)   : SNI=$HY2_SERVER_NAME, CN=$HY2_CERT_CN
+  - HY2            (UDP:8443) : SNI=$HY2_SERVER_NAME, CN=$HY2_CERT_CN
   - masq                       : http://$MASQ_PROXY_ADDR:$MASQ_PROXY_PORT/ (HY2 失败时 → nginx serve Hugo)
 
 [客户端配置 - 通用]
@@ -405,7 +406,7 @@ cat <<EOF
   network: tcp
 
 [HY2 客户端]
-  port: 443
+  port: 8443
   type: hysteria2
   password: $HY2_PASSWORD
   sni: $HY2_SERVER_NAME
@@ -420,14 +421,14 @@ echo "[v2rayN / v2rayNG 订阅 URL]（复制整行导入 v2rayN / v2rayNG / Neko
 if [[ -n "$VPS_IPV4" ]]; then
   echo "  trojan://${UUID}@${VPS_IPV4}:${TROJAN_PORT}?security=reality&sni=${REALITY_HANDSHAKE_SERVER}&fp=chrome&pbk=${REALITY_PBK_URLSAFE}&sid=${SHORT_ID_1}&type=tcp#${HOSTNAME_SHORT}-trojan-v4"
   echo "  vless://${UUID}@${VPS_IPV4}:${VLESS_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_HANDSHAKE_SERVER}&fp=chrome&pbk=${REALITY_PBK_URLSAFE}&sid=${SHORT_ID_1}&type=tcp#${HOSTNAME_SHORT}-vless-v4"
-  echo "  hysteria2://${HY2_PASSWORD}@${VPS_IPV4}:443?sni=${HY2_SERVER_NAME}&insecure=true#${HOSTNAME_SHORT}-hy2-v4"
+  echo "  hysteria2://${HY2_PASSWORD}@${VPS_IPV4}:8443?sni=${HY2_SERVER_NAME}&insecure=true#${HOSTNAME_SHORT}-hy2-v4"
 else
   echo "  (无 IPv4，跳过 v4 URI)"
 fi
 if [[ -n "$VPS_IPV6" ]]; then
   echo "  trojan://${UUID}@[${VPS_IPV6}]:${TROJAN_PORT}?security=reality&sni=${REALITY_HANDSHAKE_SERVER}&fp=chrome&pbk=${REALITY_PBK_URLSAFE}&sid=${SHORT_ID_1}&type=tcp#${HOSTNAME_SHORT}-trojan-v6"
   echo "  vless://${UUID}@[${VPS_IPV6}]:${VLESS_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_HANDSHAKE_SERVER}&fp=chrome&pbk=${REALITY_PBK_URLSAFE}&sid=${SHORT_ID_1}&type=tcp#${HOSTNAME_SHORT}-vless-v6"
-  echo "  hysteria2://${HY2_PASSWORD}@[${VPS_IPV6}]:443?sni=${HY2_SERVER_NAME}&insecure=true#${HOSTNAME_SHORT}-hy2-v6"
+  echo "  hysteria2://${HY2_PASSWORD}@[${VPS_IPV6}]:8443?sni=${HY2_SERVER_NAME}&insecure=true#${HOSTNAME_SHORT}-hy2-v6"
 else
   echo "  (无 IPv6，跳过 v6 URI)"
 fi
@@ -442,7 +443,7 @@ cat <<'EOF'
   1) VPS 上本地验证：
      sing-box check -c /etc/sing-box/config.json
      systemctl status sing-box
-     ss -lntu | grep -E ':(443|'"$TROJAN_PORT"'|'"$VLESS_PORT"')\s'
+     ss -lntu | grep -E ':(8443|'"$TROJAN_PORT"'|'"$VLESS_PORT"')\s'
   2) 客户端用上面的 URI 连一下，确认能上网
   3) 用 setup-nginx-site.sh 部署 nginx（如果还没跑）
 EOF

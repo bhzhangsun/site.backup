@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # 在 VPS 上以 root 权限执行：装 nginx 1.27+（nginx.org 源），
 # 写 3 个 server block：
-#   :80    HTTP            Hugo 静态站（直接访问 + hy2 masq 目标；带 Alt-Svc 引导 h3）
-#   :443   HTTPS (TCP)     nestseeker.xyz 真实 https 站点（h2/h1.1）+ Alt-Svc 源
-#   :8443  HTTP/3 (UDP)    Alt-Svc 升级后的 h3 目标（QUIC，跟 443 共享 cert）
+#   :80   HTTP        Hugo 静态站（直接访问 + hy2 masq 目标；带 Alt-Svc 引导 h3）
+#   :443  HTTPS (TCP) nestseeker.xyz 真实 https 站点（h2/h1.1）+ Alt-Svc 源
+#   :443  HTTP/3 (UDP) Alt-Svc 升级后的 h3 目标（QUIC，跟 443 TCP 共享 cert 和 listen）
 # 端口分配原因：
-#   - 443 TCP 让 nginx 拿来做真实 https 站点（标准端口，浏览器默认）
-#   - 443 UDP 留给 sing-box HY2，所以 h3 不能跟 443 UDP 抢（两个进程不能同端口同协议）
-#   - h3 留在 :8443 UDP，Alt-Svc 头显式指定 :8443 引导浏览器跨端口升级
+#   - 443 TCP/UDP 整组给 nginx：TCP = https，UDP = h3，跟主流部署一致（Cloudflare/Caddy/LiteSpeed）
+#   - 443 UDP 不再归 sing-box HY2（HY2 改 8443 UDP 错开），Alt-Svc 用无端口写法 h3=":443"
+#   - cert 路径对齐 acme.sh --install-cert 默认输出，跑通后真实 cert 直接覆盖
 # 配置全部走 /etc/nginx/conf.d/，不污染主配置。
-# 幂等：可重复执行；旧 conf（masq-site-*.conf / masq-fallback-*.conf）在每次重跑时自动清理。
+# 幂等：可重复执行；旧 conf（masq-site-*.conf / masq-fallback-*.conf / site-h3-8443.conf）在每次重跑时自动清理。
 #
 # 用法：sudo ./setup-nginx-site.sh
 # 可选环境变量：
@@ -24,7 +24,7 @@ set -euo pipefail
 # === 默认值 ===
 MASQ_PORT="${MASQ_PORT:-80}"
 MASQ_DOC_ROOT="${MASQ_DOC_ROOT:-/var/www/nestseeker.xyz}"
-# :443 / :8443 共用同一张 cert（acme.sh 申请 nestseeker.xyz 的产物）
+# :443 TCP/UDP 共用同一张 cert（acme.sh 申请 nestseeker.xyz 的产物）
 # 路径对齐 acme.sh --install-cert 的 --fullchain-file / --key-file 默认输出位置
 SITE_CERT_FULLCHAIN="${SITE_CERT_FULLCHAIN:-/etc/sing-box/certs/nestseeker.xyz.fullchain.pem}"
 SITE_CERT_KEY="${SITE_CERT_KEY:-/etc/sing-box/certs/nestseeker.xyz.key.pem}"
@@ -100,7 +100,7 @@ if ! grep -qE 'include\s+/etc/nginx/conf.d/\*\.conf\s*;' "$NGINX_MAIN"; then
 fi
 
 # === 3. 清理废弃/旧端口 conf ===
-# 3a. 老脚本的 :8443 Reality fallback（已废弃）
+# 3a. 老脚本的 :8443 Reality fallback（已废弃；h3 切到 :443 UDP 后 8443 整段作废）
 shopt -s nullglob
 for stale in "$NGINX_CONF_DIR"/masq-fallback-*.conf; do
   rm -f "$stale"
@@ -115,7 +115,7 @@ for stale in "$NGINX_CONF_DIR"/masq-site-*.conf; do
 done
 shopt -u nullglob
 
-# === 3b. 确保 :443 / :8443 cert 存在（自签兜底）===
+# === 3c. 确保 :443 cert 存在（自签兜底）===
 # 缺 cert 时用 openssl 自签（CN/SAN=nestseeker.xyz，10 年）
 # 跑通后用 acme.sh 申请真实 cert，直接覆盖此路径即可（路径对齐 acme.sh --install-cert 默认输出）
 # 幂等：cert 已存在则跳过；不会被覆盖
@@ -170,9 +170,9 @@ server {
     root ${MASQ_DOC_ROOT};
     index index.html;
 
-    # 引导浏览器后续请求走 h3 (UDP 8443)
+    # 引导浏览器后续请求走 h3 (UDP 443，无端口写法 = Chrome 首选)
     # always 确保 4xx/5xx 错误响应也带这头
-    add_header Alt-Svc 'h3=":8443"; ma=86400' always;
+    add_header Alt-Svc 'h3=":443"; ma=86400' always;
 
     # 跟生产 Hugo 站行为一致
     location / {
@@ -182,30 +182,29 @@ server {
 EOF
 echo "[ok] 写入 $MASQ_CONF"
 
-# === 4b. 写 :443 TCP (HTTPS) + :8443 UDP (HTTP/3) 双栈 conf ===
-# TCP 443：nestseeker.xyz 真实 https 站点（h2/http1.1）+ Alt-Svc 源
-# UDP 8443：HTTP/3 over QUIC；浏览器拿到 Alt-Svc 后升级到此
-# 为什么 h3 不在 443 UDP：443 UDP 已被 sing-box HY2 占用（两个进程不能同端口同协议）
-# TCP 443 与 UDP 8443 不同主机协议：跨端口升级靠 Alt-Svc 头显式指定 :8443
+# === 4b. 写 :443 TCP (HTTPS) + :443 UDP (HTTP/3) 双栈 conf ===
+# TCP/UDP 443 整组归 nginx：TCP = https，UDP = h3（主流部署模式，Alt-Svc 头无端口）
 # cert：acme.sh 申请的 nestseeker.xyz 真实 cert（默认路径见 env 变量）
 HTTPS_CONF="$NGINX_CONF_DIR/site-https-443.conf"
 cat > "$HTTPS_CONF" <<EOF
 # 由 setup-nginx-site.sh 生成
-# nestseeker.xyz 真实 https 站点 (TCP 443)
-# 浏览器直接访问 https://nestseeker.xyz/ 命中；同时响应 Alt-Svc 头引导升级到 h3
+# nestseeker.xyz 真实 https 站点 (TCP 443) + h3 (UDP 443) 双栈
+# 浏览器直接访问 https://nestseeker.xyz/ 命中 TCP 443；同时响应 Alt-Svc 头引导升级到 h3
+# 同一端口 TCP+UDP 各走各的 socket，互不干扰
 server {
     listen 443 ssl;
     listen [::]:443 ssl;
     http2 on;                       # nginx 1.25+ 推荐写法（替代 listen ... http2）
+    http3 on;                       # 启用 HTTP/3 (nginx 1.25.0+，QUIC 监听同 :443 UDP)
 
     server_name nestseeker.xyz;
 
     ssl_certificate     ${SITE_CERT_FULLCHAIN};
     ssl_certificate_key ${SITE_CERT_KEY};
 
-    # 告诉浏览器：h3 在 8443 (UDP)（跨端口显式指定，h3 跟 443 UDP 的 HY2 抢不到）
+    # 告诉浏览器：h3 在 443 (UDP)（无端口写法 = Chrome 首选，h2 跟 h3 同 listen 端口）
     # always 确保 4xx/5xx 错误响应也带这头，否则出错时浏览器永远不知道 h3 可用
-    add_header Alt-Svc 'h3=":8443"; ma=86400' always;
+    add_header Alt-Svc 'h3=":443"; ma=86400' always;
 
     root ${MASQ_DOC_ROOT};
     index index.html;
@@ -217,31 +216,15 @@ server {
 EOF
 echo "[ok] 写入 $HTTPS_CONF"
 
-H3_CONF="$NGINX_CONF_DIR/site-h3-8443.conf"
-cat > "$H3_CONF" <<EOF
-# 由 setup-nginx-site.sh 生成
-# HTTP/3 over QUIC (UDP 8443)
-# 浏览器从 TCP 443 的 Alt-Svc 头学到这里
-# 与 TCP 443 (site-https-443.conf) 共享 cert（h2 跟 h3 必须同 cert，否则浏览器拒绝升级）
-server {
-    listen 8443 quic;               # QUIC = UDP 上的 h3 传输
-    http3 on;                       # 启用 HTTP/3 (nginx 1.25.0+)
-
-    server_name nestseeker.xyz;
-
-    # QUIC 握手也要 cert（h3 客户端会验证）
-    ssl_certificate     ${SITE_CERT_FULLCHAIN};
-    ssl_certificate_key ${SITE_CERT_KEY};
-
-    root ${MASQ_DOC_ROOT};
-    index index.html;
-
-    location / {
-        try_files \$uri \$uri/ =404;
-    }
-}
-EOF
-echo "[ok] 写入 $H3_CONF"
+# === 4c. 清理旧独立 h3 conf（h3 已合并进 :443 server block） ===
+# 历史版本有独立的 site-h3-8443.conf 走 :8443 UDP；切端口后 :443 TCP+UDP 同 server block
+# 留下旧文件会被 nginx include 二次监听 :8443（端口冲突 nginx -t 报错）
+shopt -s nullglob
+for stale in "$NGINX_CONF_DIR"/site-h3-*.conf; do
+  rm -f "$stale"
+  echo "[ok] 已清理旧独立 h3 conf: $stale"
+done
+shopt -u nullglob
 
 # === 5. 验证并 reload ===
 echo "[info] 验证 nginx 配置..."
@@ -262,7 +245,7 @@ else
 fi
 
 # 探测端口监听
-for p in "$MASQ_PORT" "443" "8443"; do
+for p in "$MASQ_PORT" "443"; do
   if ss -lntu "sport = :$p" 2>/dev/null | grep -q LISTEN; then
     echo "[ok] :$p 在监听 ($(ss -lntu "sport = :$p" 2>/dev/null | grep LISTEN | awk '{print $1}' | sort -u | tr '\n' ',' | sed 's/,$//'))"
   else
@@ -274,15 +257,14 @@ cat <<EOF
 
 [完成] nginx 已就位：
   - :${MASQ_PORT}    HTTP              Hugo 静态站（直接访问 + hy2 masq 目标；带 Alt-Svc 引导 h3）
-  - :443    TCP       HTTPS (h2/h1.1)   nestseeker.xyz 真实 https 站点 + Alt-Svc 源
-  - :8443   UDP       HTTP/3 (QUIC)     浏览器 Alt-Svc 升级后的 h3 目标
+  - :443    TCP+UDP  HTTPS + h3        nestseeker.xyz 真实 https (h2) + h3 (QUIC)，与 cert 共享
   cert: ${SITE_CERT_FULLCHAIN}（当前自签兜底；跑通后用 acme.sh 申请 nestseeker.xyz 真实 cert 直接覆盖此路径）
 
 [本地验证] 跑完后从 VPS 本地：
-  curl -I  http://127.0.0.1:${MASQ_PORT}/                            # :MASQ_PORT：Hugo plain HTTP（响应头含 Alt-Svc: h3=":8443"）
-  curl -kI https://127.0.0.1:443/                                  # :443：HTTPS（响应头含 Alt-Svc: h3=":8443"）
-  ss -lntu | grep -E ':(${MASQ_PORT}|443|8443)\s'                    # 应看到 :MASQ_PORT tcp, :443 tcp, :8443 udp
+  curl -I  http://127.0.0.1:${MASQ_PORT}/                            # :MASQ_PORT：Hugo plain HTTP（响应头含 Alt-Svc: h3=":443"）
+  curl -kI https://127.0.0.1:443/                                  # :443：HTTPS（响应头含 Alt-Svc: h3=":443"）
+  ss -lntu | grep -E ':(${MASQ_PORT}|443)\s'                         # 应看到 :MASQ_PORT tcp, :443 tcp+udp
 
 [下一步] 跑 setup-singbox.sh，让 trojan reality 监听 :2053（错开 443 让 nginx 拿到），
-  HY2 继续在 UDP:443，vless 备用入口在 :1443。
+  HY2 在 UDP:8443（错开 443），vless 备用入口在 :1443。
 EOF
