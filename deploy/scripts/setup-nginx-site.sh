@@ -66,89 +66,96 @@ fi
 # 流程：装编译依赖 → 拉 OpenSSL 源码 → 卸旧 apt nginx → 编译 nginx（自动 build OpenSSL）
 #       → 写 mime.types + nginx.conf + 创建 nginx user → 写 systemd service
 install_nginx() {
-  # 1) 已有 nginx 且二进制里有 ngx_quic_ssl 符号 → 跳过（真 QUIC）
+  local SKIP_COMPILE=0
+
+  # 1) 已有 nginx 且二进制里有 ngx_quic_ssl 符号 → 跳过整个编译阶段
   # 不能用 "with-http_v3_module" 判断：apt 装的 nginx 1.30.3-1~bullseye
   #   configure 参数里有这个标志但实际没编（OpenSSL 1.1.1 没 QUIC API，模块被跳过），
   #   二进制里根本没有 ngx_quic_ssl 符号。"ngx_quic_ssl" 是 nginx quic 模块的 C 符号，
   #   OpenSSL 1.1.1 编的 nginx 永远不会出现这个符号——这是金标准。
+  # 关键：这里只 set SKIP_COMPILE=1 不 return；下面的 6)~9) 步（mime.types /
+  # nginx.conf / user / systemd）仍要跑，apt purge 会把它们带掉，
+  # 自编译的 make install 也不装它们，必须每次都补。
   if command -v nginx >/dev/null 2>&1 && strings /usr/sbin/nginx 2>/dev/null | grep -q "ngx_quic_ssl"; then
     local v
     v=$(nginx -v 2>&1 | awk -F/ '{print $2}')
-    echo "[ok] nginx $v 已编入 QUIC 模块（ngx_quic_ssl 符号在），跳过编译"
-    return
-  fi
-  if command -v nginx >/dev/null 2>&1 && nginx -V 2>&1 | grep -q "with-http_v3_module"; then
+    echo "[ok] nginx $v 已编入 QUIC 模块（ngx_quic_ssl 符号在），跳过编译（仍会重写 conf / mime / user / systemd）"
+    SKIP_COMPILE=1
+  elif command -v nginx >/dev/null 2>&1 && nginx -V 2>&1 | grep -q "with-http_v3_module"; then
     echo "[warn] 检测到 nginx 1.30.3-1~bullseye（nginx.org 源，OpenSSL 1.1.1 编出假 QUIC），将卸载并自编译"
   fi
 
-  echo "[info] 准备编译环境（依赖 + OpenSSL $OPENSSL_VERSION + nginx $NGINX_VERSION）..."
+  # 2) ~ 5) 编译相关：已编好（SKIP_COMPILE=1）时整段跳过，省 5-10 分钟
+  if [[ "$SKIP_COMPILE" != "1" ]]; then
+    echo "[info] 准备编译环境（依赖 + OpenSSL $OPENSSL_VERSION + nginx $NGINX_VERSION）..."
 
-  # 2) 装编译依赖
-  # - git：拉 OpenSSL 3.2+ 源码（hg.nginx.org 2024 年已废弃）
-  # - perl + perl-modules-5.32：OpenSSL configure 阶段必用
-  apt-get update -y >/dev/null
-  apt-get install -y --no-install-recommends \
-    build-essential wget curl ca-certificates git \
-    libpcre3-dev zlib1g-dev libssl-dev \
-    libxml2-dev libxslt1-dev libgd-dev libgeoip-dev \
-    perl perl-modules-5.32 \
-    >/dev/null
-
-  # 3) 拉 OpenSSL 3.2+ 源码（quictls fork 已合并到 OpenSSL 主线 3.2+）
-  # -c advice.detachedHead=false：关掉 git 对 --depth 1 切到 tag 的 detached HEAD 警告
-  # 强制 rm -rf .openssl 残留：OpenSSL 3.x 构建中间目录；上次失败构建留的旧 Makefile/configdata.pm
-  #   会让本次 build 继续用残留选项（含 enable-tls1.3），必须清。
-  if [[ ! -d "$OPENSSL_SRC" ]]; then
-    echo "[info] 拉取 OpenSSL $OPENSSL_VERSION 源码..."
-    git -c advice.detachedHead=false clone --depth 1 --branch "openssl-$OPENSSL_VERSION" \
-      https://github.com/openssl/openssl.git "$OPENSSL_SRC" >/dev/null
-    echo "[ok] OpenSSL 源码已就位: $OPENSSL_SRC"
-  else
-    echo "[ok] OpenSSL 源码已存在: $OPENSSL_SRC"
-  fi
-  rm -rf "$OPENSSL_SRC/.openssl" "$OPENSSL_SRC/Makefile" "$OPENSSL_SRC/configdata.pm"
-
-  # 4) 卸载旧 apt 装的 nginx（不带 QUIC；保留 /etc/sing-box/certs/、/etc/nginx/conf.d/ 不动）
-  if dpkg -l nginx 2>/dev/null | grep -q '^ii'; then
-    echo "[info] 卸载旧 apt 装的 nginx（不带 QUIC）..."
-    systemctl stop nginx 2>/dev/null || true
-    apt-get purge -y nginx nginx-common >/dev/null
-    rm -f /etc/apt/sources.list.d/nginx.list /etc/apt/preferences.d/99nginx
+    # 2) 装编译依赖
+    # - git：拉 OpenSSL 3.2+ 源码（hg.nginx.org 2024 年已废弃）
+    # - perl + perl-modules-5.32：OpenSSL configure 阶段必用
     apt-get update -y >/dev/null
+    apt-get install -y --no-install-recommends \
+      build-essential wget curl ca-certificates git \
+      libpcre3-dev zlib1g-dev libssl-dev \
+      libxml2-dev libxslt1-dev libgd-dev libgeoip-dev \
+      perl perl-modules-5.32 \
+      >/dev/null
+
+    # 3) 拉 OpenSSL 3.2+ 源码（quictls fork 已合并到 OpenSSL 主线 3.2+）
+    # -c advice.detachedHead=false：关掉 git 对 --depth 1 切到 tag 的 detached HEAD 警告
+    # 强制 rm -rf .openssl 残留：OpenSSL 3.x 构建中间目录；上次失败构建留的旧 Makefile/configdata.pm
+    #   会让本次 build 继续用残留选项（含 enable-tls1.3），必须清。
+    if [[ ! -d "$OPENSSL_SRC" ]]; then
+      echo "[info] 拉取 OpenSSL $OPENSSL_VERSION 源码..."
+      git -c advice.detachedHead=false clone --depth 1 --branch "openssl-$OPENSSL_VERSION" \
+        https://github.com/openssl/openssl.git "$OPENSSL_SRC" >/dev/null
+      echo "[ok] OpenSSL 源码已就位: $OPENSSL_SRC"
+    else
+      echo "[ok] OpenSSL 源码已存在: $OPENSSL_SRC"
+    fi
+    rm -rf "$OPENSSL_SRC/.openssl" "$OPENSSL_SRC/Makefile" "$OPENSSL_SRC/configdata.pm"
+
+    # 4) 卸载旧 apt 装的 nginx（不带 QUIC；保留 /etc/sing-box/certs/、/etc/nginx/conf.d/ 不动）
+    if dpkg -l nginx 2>/dev/null | grep -q '^ii'; then
+      echo "[info] 卸载旧 apt 装的 nginx（不带 QUIC）..."
+      systemctl stop nginx 2>/dev/null || true
+      apt-get purge -y nginx nginx-common >/dev/null
+      rm -f /etc/apt/sources.list.d/nginx.list /etc/apt/preferences.d/99nginx
+      apt-get update -y >/dev/null
+    fi
+
+    # 5) 编译 nginx $NGINX_VERSION（让 nginx 编译时自动 build OpenSSL 3.2+）
+    # --with-openssl= 让 nginx 自己 build OpenSSL，比单独 build 少一步、链接更稳
+    # 不传 --with-openssl-opt：nginx 1.30.3 的 auto/lib/openssl/make 已硬编码
+    #   ./config --prefix=... no-shared no-threads $OPENSSL_OPT
+    # OPENSSL_OPT 是追加在最后，传 no-shared 跟硬编码重复；
+    # 传 -DOPENSSL_NO_HEARTBEATS / enable-tls1.3 在 OpenSSL 3.x 都是无效选项，
+    # 会让 build 直接报 "Unsupported options" 挂掉。留空让 nginx 用默认 no-shared no-threads。
+    echo "[info] 编译 nginx $NGINX_VERSION + OpenSSL $OPENSSL_VERSION（首次约 5-10min）..."
+    rm -rf "/tmp/nginx-$NGINX_VERSION"
+    (cd /tmp && \
+      wget -q "https://nginx.org/download/nginx-$NGINX_VERSION.tar.gz" && \
+      tar xzf "nginx-$NGINX_VERSION.tar.gz" && \
+      cd "nginx-$NGINX_VERSION" && \
+      ./configure \
+        --prefix=/etc/nginx \
+        --sbin-path=/usr/sbin/nginx \
+        --conf-path=/etc/nginx/nginx.conf \
+        --error-log-path=/var/log/nginx/error.log \
+        --http-log-path=/var/log/nginx/access.log \
+        --pid-path=/var/run/nginx.pid \
+        --lock-path=/var/run/nginx.lock \
+        --with-http_v3_module \
+        --with-openssl="$OPENSSL_SRC" \
+        --with-http_ssl_module \
+        --with-http_v2_module \
+        --with-http_stub_status_module \
+        --with-http_realip_module \
+        >/dev/null && \
+      make -j"$(nproc)" >/dev/null && \
+      make install >/dev/null)
+
+    echo "[ok] nginx $NGINX_VERSION 已编译: $(nginx -v 2>&1)"
   fi
-
-  # 5) 编译 nginx $NGINX_VERSION（让 nginx 编译时自动 build OpenSSL 3.2+）
-  # --with-openssl= 让 nginx 自己 build OpenSSL，比单独 build 少一步、链接更稳
-  # 不传 --with-openssl-opt：nginx 1.30.3 的 auto/lib/openssl/make 已硬编码
-  #   ./config --prefix=... no-shared no-threads $OPENSSL_OPT
-  # OPENSSL_OPT 是追加在最后，传 no-shared 跟硬编码重复；
-  # 传 -DOPENSSL_NO_HEARTBEATS / enable-tls1.3 在 OpenSSL 3.x 都是无效选项，
-  # 会让 build 直接报 "Unsupported options" 挂掉。留空让 nginx 用默认 no-shared no-threads。
-  echo "[info] 编译 nginx $NGINX_VERSION + OpenSSL $OPENSSL_VERSION（首次约 5-10min）..."
-  rm -rf "/tmp/nginx-$NGINX_VERSION"
-  (cd /tmp && \
-    wget -q "https://nginx.org/download/nginx-$NGINX_VERSION.tar.gz" && \
-    tar xzf "nginx-$NGINX_VERSION.tar.gz" && \
-    cd "nginx-$NGINX_VERSION" && \
-    ./configure \
-      --prefix=/etc/nginx \
-      --sbin-path=/usr/sbin/nginx \
-      --conf-path=/etc/nginx/nginx.conf \
-      --error-log-path=/var/log/nginx/error.log \
-      --http-log-path=/var/log/nginx/access.log \
-      --pid-path=/var/run/nginx.pid \
-      --lock-path=/var/run/nginx.lock \
-      --with-http_v3_module \
-      --with-openssl="$OPENSSL_SRC" \
-      --with-http_ssl_module \
-      --with-http_v2_module \
-      --with-http_stub_status_module \
-      --with-http_realip_module \
-      >/dev/null && \
-    make -j"$(nproc)" >/dev/null && \
-    make install >/dev/null)
-
-  echo "[ok] nginx $NGINX_VERSION 已编译: $(nginx -v 2>&1)"
 
   # 6) 写 /etc/nginx/mime.types（自编译不会装；apt 装的也被 purge 带掉）
   #    不写的话 http 块里 include mime.types 会失败，所有静态文件变 application/octet-stream。
