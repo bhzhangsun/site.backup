@@ -110,17 +110,17 @@ acme.sh --install-cert -d nestseeker.xyz \
 VPS 上**以 root 登录**后执行：
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-deploy-user.sh | bash
+wget -qO- "https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-deploy-user.sh?t=$(date +%s)" | bash
 ```
 
 可选覆盖（一般不用）：
 
 ```bash
 # 自定义部署路径
-wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-deploy-user.sh | DEPLOY_PATH=/var/www/nestseeker.xyz bash
+wget -qO- "https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-deploy-user.sh?t=$(date +%s)" | DEPLOY_PATH=/var/www/nestseeker.xyz bash
 
 # 临时换 SSH 公钥
-wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-deploy-user.sh | SSH_PUBKEY="ssh-ed25519 AAAA..." bash
+wget -qO- "https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-deploy-user.sh?t=$(date +%s)" | SSH_PUBKEY="ssh-ed25519 AAAA..." bash
 ```
 
 > **不要让脚本读本机 `hosts.json`** — 脚本在 VPS 上跑，VPS 没有仓库里的 `hosts.json`。
@@ -133,13 +133,13 @@ wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/s
 继续以 root 登录：
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-nginx-site.sh | bash
+wget -qO- "https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-nginx-site.sh?t=$(date +%s)" | bash
 ```
 
 可选覆盖（一般不用动）：
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-nginx-site.sh | MASQ_PORT=80 MASQ_DOC_ROOT=/var/www/nestseeker.xyz bash
+wget -qO- "https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-nginx-site.sh?t=$(date +%s)" | MASQ_PORT=80 MASQ_DOC_ROOT=/var/www/nestseeker.xyz bash
 ```
 
 > :443 / :8443 缺 cert 时脚本内 openssl 自签兜底，浏览器会红屏但能握手。跑通后用 acme.sh 申请真实 cert 覆盖默认路径即可（见上方 SSL 章节）。
@@ -155,13 +155,13 @@ ss -lntu | grep -E ':(80|443|8443)\s'  # 应看到 :80 tcp + :443 tcp + :8443 ud
 ### 3. ③ 装 sing-box
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-singbox.sh | bash
+wget -qO- "https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-singbox.sh?t=$(date +%s)" | bash
 ```
 
 可选覆盖（默认就够用）：
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-singbox.sh | REALITY_HANDSHAKE_SERVER=www.tesla.com HY2_SERVER_NAME=nestseeker.xyz MASQ_PROXY_PORT=80 bash
+wget -qO- "https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-singbox.sh?t=$(date +%s)" | REALITY_HANDSHAKE_SERVER=www.tesla.com HY2_SERVER_NAME=nestseeker.xyz MASQ_PROXY_PORT=80 bash
 ```
 
 **脚本末尾会打印客户端配置**，包含：
@@ -229,10 +229,10 @@ insecure=true
 - **查看日志**：`journalctl -u sing-box -n 100 --no-pager`
 - **重置密钥**（警告：所有客户端失效）：
   ```bash
-  wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-singbox.sh | FORCE_REGEN_KEYS=1 bash
+  wget -qO- "https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-singbox.sh?t=$(date +%s)" | FORCE_REGEN_KEYS=1 bash
   ```
 - **重置 cert**：
   ```bash
-  wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-singbox.sh | FORCE_REGEN_CERT=1 bash
+  wget -qO- "https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-singbox.sh?t=$(date +%s)" | FORCE_REGEN_CERT=1 bash
   ```
 - **首次部署 Hugo 内容**：`gh workflow run deploy.yml`（GitHub Actions，依赖 `hosts.json`）

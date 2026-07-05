@@ -1,4 +1,4 @@
-baseURL = "me.nestseeker.xyz"
+baseURL = "https://nestseeker.xyz/"
 languageCode = 'en-us'
 title = 'Diogo Ferro - Portfolio & Blog'
 theme = 'hugo-noir' # This is the theme you are using
