@@ -191,6 +191,13 @@ else
   SHORT_ID_1=$(openssl rand -hex 8)             # 8 bytes = 16 hex chars
   HY2_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)
 
+  # /var/lib/sing-box/ 不存在时 cat > 会 No such file or directory：
+  # sing-box 官方 deb 包的 systemd service 配 StateDirectory=sing-box，
+  # **只有 service 启动时才自动创建 + chown**；脚本在 service 启动前就写 keys.json，
+  # 目录自然不在。手动 mkdir 一下；systemd 启 service 时会再 chown 给 sing-box 用户。
+  mkdir -p "$(dirname "$KEYS_FILE")"
+  chmod 700 "$(dirname "$KEYS_FILE")"
+
   cat > "$KEYS_FILE" <<EOF
 {
   "uuid": "$UUID",
