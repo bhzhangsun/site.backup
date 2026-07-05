@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 # 在 VPS 上以 root 权限执行：装 sing-box（1.11+），
 # 写 /etc/sing-box/config.json：
-#   - Reality Trojan TCP:443  trojan + reality（短 ID 错 + ALPN h2/h1.1
-#                                  → fallback 到 127.0.0.1:8443 nginx；
-#                                  裸探测者无 ALPN → reality 透明转发 dest）
+#   - Reality Trojan TCP:2053 trojan + reality（短 ID 错 → reality 透明转发
+#                                  handshake_server；端口错开 443 让出给 nginx https/h3）
 #   - Reality Vless  TCP:1443 vless + reality（备用入口，无 fallback；
-#                                  短 ID 错 → reality 透明转发 dest）
+#                                  短 ID 错 → reality 透明转发 handshake_server）
 #   - HY2            UDP:443  hysteria2（非 hy2 客户端 → masq → http://127.0.0.1:80 nginx）
 # 生成所有密钥（UUID / Reality keypair / shortId / HY2 password），
-# 自签 HY2 cert（CN=nestseeker.xyz，复用于 nginx :8443 HTTPS），
+# 自签 HY2 cert（CN=nestseeker.xyz），
 # 启动 systemd service。
 # 幂等：可重复执行；密钥/cert 已存在则不覆盖；config.json 由环境变量重写。
 #
 # 用法：sudo ./setup-singbox.sh
 # 可选环境变量：
-#   REALITY_HANDSHAKE_SERVER=www.tesla.com
+#   TROJAN_PORT=2053                       # trojan reality 监听端口（443 让给 nginx https）
+#   REALITY_HANDSHAKE_SERVER=www.tesla.com # reality 透明转发的伪装站
 #   REALITY_HANDSHAKE_PORT=443
+#   VLESS_PORT=1443
 #   HY2_SERVER_NAME=nestseeker.xyz
 #   HY2_CERT_CN=nestseeker.xyz
 #   MASQ_PROXY_ADDR=127.0.0.1
@@ -36,10 +37,12 @@ REALITY_HANDSHAKE_PORT="${REALITY_HANDSHAKE_PORT:-443}"
 HY2_SERVER_NAME="${HY2_SERVER_NAME:-nestseeker.xyz}"
 HY2_CERT_CN="${HY2_CERT_CN:-nestseeker.xyz}"
 # HY2 硬约束（设计决定，不要改）：
-#   listen = ::     IPv4+IPv6 dual stack，与 vless inbound 一致
-#   port  = 443     必须独立端口（sing-box 同端口 TCP/UDP sniff 边界场景不稳）
-#                   注意：vless reality 也想用 443 但 sing-box 不支持两个 inbound 同端口 listen
-#                   → vless 改 1443
+#   listen = ::     IPv4+IPv6 dual stack
+#   port  = 443     独立 UDP 端口；443 TCP 让给 nginx serve https 站点 + h3 Alt-Svc 源
+#                   HY2 与 443 TCP 互不干扰（协议不同：UDP vs TCP，socket 独立）
+TROJAN_PORT="${TROJAN_PORT:-2053}"
+# Trojan reality 监听端口：故意错开 443（443 TCP/UDP 已分别给 nginx https / HY2）
+# sing-box 1.13 同一 inbound 不支持同端口 listen（vless 1443 也是这个原因）
 VLESS_PORT="${VLESS_PORT:-1443}"
 MASQ_PROXY_ADDR="${MASQ_PROXY_ADDR:-127.0.0.1}"
 MASQ_PROXY_PORT="${MASQ_PROXY_PORT:-80}"
@@ -238,14 +241,15 @@ fi
 
 # === 5. 写 sing-box config.json ===
 # 关键设计：
-#   - Trojan+Reality 监听 TCP:443（IPv6 dual stack）
-#       · 短 ID 错 + ALPN h2/h1.1 → fallback 127.0.0.1:8443（nginx HTTPS + Alt-Svc 引导 h3）
-#       · 短 ID 错 + 无 ALPN      → reality 透明转发到 handshake_server（反探测）
+#   - Trojan+Reality 监听 TCP:$TROJAN_PORT（IPv6 dual stack）
+#       · 短 ID 错 → reality 透明转发到 handshake_server（反探测）
+#       · 端口 2053 故意错开 443，让 443 TCP/UDP 给 nginx https / h3
+#       · 不再需要 fallback / fallback_for_alpn：443 已不归 sing-box 管
 #   - Vless+Reality 监听 TCP:$VLESS_PORT（备用入口，IPv6 dual stack）
 #       · sing-box 1.13 vless 不支持 fallback，且同端口两个 inbound 冲突 → 必须独立端口
 #       · 短 ID 错 → reality 透明转发到 handshake_server（反探测，无 fallback 弱点）
-#   - HY2 监听 UDP:443（hysteria2，与 Trojan TCP:443 共享 IPv6 dual stack）
-#   - HY2 失败（非 HY2 客户端）→ masquerade proxy → http://127.0.0.1:80 (nginx)
+#   - HY2 监听 UDP:443（hysteria2，与 443 TCP 的 nginx https 共享 IPv6 dual stack）
+#   - HY2 失败（非 HY2 客户端）→ masquerade proxy → http://127.0.0.1:80 (nginx http)
 #
 # 关键选择：trojan 与 vless 共用同一 Reality keypair + short_id
 #   - 它们共享一个 reality 私钥（一份 Reality config）
@@ -264,7 +268,7 @@ cat > "$CONFIG_FILE" <<EOF
     {
       "type": "trojan",
       "listen": "::",
-      "listen_port": 443,
+      "listen_port": $TROJAN_PORT,
       "users": [
         {
           "name": "default",
@@ -283,14 +287,6 @@ cat > "$CONFIG_FILE" <<EOF
           "private_key": "$REALITY_PRIVATE_KEY",
           "short_id": ["$SHORT_ID_1"]
         }
-      },
-      "fallback": {
-        "server": "127.0.0.1",
-        "server_port": 8443
-      },
-      "fallback_for_alpn": {
-        "h2":       { "server": "127.0.0.1", "server_port": 8443 },
-        "http/1.1": { "server": "127.0.0.1", "server_port": 8443 }
       }
     },
     {
@@ -378,9 +374,8 @@ REALITY_PBK_URLSAFE=$(printf '%s' "$REALITY_PUBLIC_KEY" | tr '+/' '-_' | tr -d '
 cat <<EOF
 
 [完成] sing-box 已就位：
-  - Reality Trojan (TCP:443)   : password=UUID, SNI=$REALITY_HANDSHAKE_SERVER, dest=$REALITY_HANDSHAKE_SERVER
-                                 短 ID 错 + ALPN h2/h1.1 → fallback 127.0.0.1:8443 (nginx HTTPS + Alt-Svc 引导 h3)
-                                 短 ID 错 + 无 ALPN      → reality 透明转发到真实 $REALITY_HANDSHAKE_SERVER
+  - Reality Trojan (TCP:$TROJAN_PORT) : password=UUID, SNI=$REALITY_HANDSHAKE_SERVER, dest=$REALITY_HANDSHAKE_SERVER
+                                 短 ID 错 → reality 透明转发到真实 $REALITY_HANDSHAKE_SERVER
   - Reality Vless  (TCP:$VLESS_PORT) : UUID, SNI=$REALITY_HANDSHAKE_SERVER, dest=$REALITY_HANDSHAKE_SERVER
                                  短 ID 错 → reality 透明转发到真实 $REALITY_HANDSHAKE_SERVER（无 fallback，反探测更收敛）
   - HY2            (UDP:443)   : SNI=$HY2_SERVER_NAME, CN=$HY2_CERT_CN
@@ -389,15 +384,15 @@ cat <<EOF
 [客户端配置 - 通用]
   vps_ip: <your vps ip>
 
-[Reality Trojan 客户端 - 主入口（推荐，浏览器兼容 fallback 路由）]
-  port: 443
+[Reality Trojan 客户端 - 主入口]
+  port: $TROJAN_PORT
   type: trojan
   password: $UUID
   serverName: $REALITY_HANDSHAKE_SERVER
   publicKey: $REALITY_PUBLIC_KEY
   shortId: $SHORT_ID_1
   network: tcp
-  ⚠️  客户端不要配 ALPN（ALPN=h2/http1.1 会被 fallback_for_alpn 截到 nginx，永远进不了 trojan 协议）
+  # ALPN 可任意配（fallback 已移除，ALPN=h2/h1.1 不再被截）
 
 [Reality Vless 客户端 - 备用入口（反探测稍强，无 fallback 暴露面）]
   port: $VLESS_PORT
@@ -420,17 +415,17 @@ EOF
 
 # === 8. 打印 v2rayN / v2rayNG 订阅 URL（trojan + vless + hy2）×（ipv4 + ipv6）正交 ===
 # IPv6 在 URI 里用 [] 包裹；URI fragment 用 hostname + proto + af 区分
-# 关键：trojan URI 不带 alpn 参数（让客户端用 ALPN=空，否则被 fallback 截到 nginx）
+# 注：fallback 已移除，trojan URI 不强制 alpn=空（客户端可任意配 alpn）
 echo "[v2rayN / v2rayNG 订阅 URL]（复制整行导入 v2rayN / v2rayNG / Nekoray / Shadowrocket）"
 if [[ -n "$VPS_IPV4" ]]; then
-  echo "  trojan://${UUID}@${VPS_IPV4}:443?security=reality&sni=${REALITY_HANDSHAKE_SERVER}&fp=chrome&pbk=${REALITY_PBK_URLSAFE}&sid=${SHORT_ID_1}&type=tcp#${HOSTNAME_SHORT}-trojan-v4"
+  echo "  trojan://${UUID}@${VPS_IPV4}:${TROJAN_PORT}?security=reality&sni=${REALITY_HANDSHAKE_SERVER}&fp=chrome&pbk=${REALITY_PBK_URLSAFE}&sid=${SHORT_ID_1}&type=tcp#${HOSTNAME_SHORT}-trojan-v4"
   echo "  vless://${UUID}@${VPS_IPV4}:${VLESS_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_HANDSHAKE_SERVER}&fp=chrome&pbk=${REALITY_PBK_URLSAFE}&sid=${SHORT_ID_1}&type=tcp#${HOSTNAME_SHORT}-vless-v4"
   echo "  hysteria2://${HY2_PASSWORD}@${VPS_IPV4}:443?sni=${HY2_SERVER_NAME}&insecure=true#${HOSTNAME_SHORT}-hy2-v4"
 else
   echo "  (无 IPv4，跳过 v4 URI)"
 fi
 if [[ -n "$VPS_IPV6" ]]; then
-  echo "  trojan://${UUID}@[${VPS_IPV6}]:443?security=reality&sni=${REALITY_HANDSHAKE_SERVER}&fp=chrome&pbk=${REALITY_PBK_URLSAFE}&sid=${SHORT_ID_1}&type=tcp#${HOSTNAME_SHORT}-trojan-v6"
+  echo "  trojan://${UUID}@[${VPS_IPV6}]:${TROJAN_PORT}?security=reality&sni=${REALITY_HANDSHAKE_SERVER}&fp=chrome&pbk=${REALITY_PBK_URLSAFE}&sid=${SHORT_ID_1}&type=tcp#${HOSTNAME_SHORT}-trojan-v6"
   echo "  vless://${UUID}@[${VPS_IPV6}]:${VLESS_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_HANDSHAKE_SERVER}&fp=chrome&pbk=${REALITY_PBK_URLSAFE}&sid=${SHORT_ID_1}&type=tcp#${HOSTNAME_SHORT}-vless-v6"
   echo "  hysteria2://${HY2_PASSWORD}@[${VPS_IPV6}]:443?sni=${HY2_SERVER_NAME}&insecure=true#${HOSTNAME_SHORT}-hy2-v6"
 else
@@ -447,7 +442,7 @@ cat <<'EOF'
   1) VPS 上本地验证：
      sing-box check -c /etc/sing-box/config.json
      systemctl status sing-box
-     ss -lntu | grep ':443\s'
+     ss -lntu | grep -E ':(443|'"$TROJAN_PORT"'|'"$VLESS_PORT"')\s'
   2) 客户端用上面的 URI 连一下，确认能上网
   3) 用 setup-nginx-site.sh 部署 nginx（如果还没跑）
 EOF
