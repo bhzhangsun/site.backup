@@ -63,7 +63,8 @@ fi
 
 # === 1. 自编译 nginx + OpenSSL 3.2+（带 QUIC 支持）===
 # 检测：二进制里有 ngx_quic_ssl 符号 → 跳过（真 QUIC）
-# 流程：装编译依赖 → 拉 OpenSSL 源码 → 卸旧 apt nginx → 编译 nginx（自动 build OpenSSL）→ 写 systemd service
+# 流程：装编译依赖 → 拉 OpenSSL 源码 → 卸旧 apt nginx → 编译 nginx（自动 build OpenSSL）
+#       → 写 mime.types + nginx.conf + 创建 nginx user → 写 systemd service
 install_nginx() {
   # 1) 已有 nginx 且二进制里有 ngx_quic_ssl 符号 → 跳过（真 QUIC）
   # 不能用 "with-http_v3_module" 判断：apt 装的 nginx 1.30.3-1~bullseye
@@ -149,7 +150,47 @@ install_nginx() {
 
   echo "[ok] nginx $NGINX_VERSION 已编译: $(nginx -v 2>&1)"
 
-  # 6) 写 systemd service（apt 卸载会带掉，自己补一份）
+  # 6) 写 /etc/nginx/mime.types（自编译不会装；apt 装的也被 purge 带掉）
+  #    不写的话 http 块里 include mime.types 会失败，所有静态文件变 application/octet-stream。
+  if [[ ! -f /etc/nginx/mime.types ]]; then
+    echo "[info] 下载 /etc/nginx/mime.types..."
+    wget -q "https://raw.githubusercontent.com/nginx/nginx/release-$NGINX_VERSION/conf/mime.types" \
+      -O /etc/nginx/mime.types
+    echo "[ok] 已写入 /etc/nginx/mime.types"
+  fi
+
+  # 7) 写 /etc/nginx/nginx.conf（自编译不会装；apt 装的也被 purge 带掉）
+  #    用最小可用模板，http 块里 include /etc/nginx/conf.d/*.conf；
+  #    不含示例 server 块（避免跟 conf.d 里的 :80/:443 server 冲突）。
+  cat > /etc/nginx/nginx.conf <<'NGINX_MAIN_EOF'
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /var/run/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+    access_log    /var/log/nginx/access.log;
+    sendfile      on;
+    keepalive_timeout 65;
+
+    include /etc/nginx/conf.d/*.conf;
+}
+NGINX_MAIN_EOF
+  echo "[ok] 已写入 /etc/nginx/nginx.conf"
+
+  # 8) 确保 nginx user 存在（apt purge nginx-common 会带掉，user 启动会失败）
+  if ! getent passwd nginx >/dev/null; then
+    useradd -r -s /usr/sbin/nologin nginx
+    echo "[ok] 已创建 nginx user"
+  fi
+
+  # 9) 写 systemd service（apt 卸载会带掉，自己补一份）
   if [[ ! -f /lib/systemd/system/nginx.service ]] && [[ ! -f /etc/systemd/system/nginx.service ]]; then
     cat > /lib/systemd/system/nginx.service <<'EOF'
 [Unit]
@@ -181,15 +222,9 @@ else
 fi
 
 # === 2. 确保 conf.d 布局 ===
-NGINX_MAIN="/etc/nginx/nginx.conf"
+# install_nginx() 内部已主动写好 /etc/nginx/nginx.conf（http 块里 include conf.d/*.conf），
+# 这里只确保 conf.d 目录存在即可。
 mkdir -p "$NGINX_CONF_DIR"
-
-# 官方包默认就有 include /etc/nginx/conf.d/*.conf，不动它
-if ! grep -qE 'include\s+/etc/nginx/conf.d/\*\.conf\s*;' "$NGINX_MAIN"; then
-  echo "[warn] nginx.conf 缺 conf.d include，手动补"
-  # 在第一个 "}" 之前（http 块结束）插入
-  sed -i '0,/^}/{s|^}\s*$|    include /etc/nginx/conf.d/*.conf;\n}\n|}' "$NGINX_MAIN"
-fi
 
 # === 3. 清理废弃/旧端口 conf ===
 # 3a. 老脚本的 :8443 Reality fallback（已废弃；h3 切到 :443 UDP 后 8443 整段作废）
