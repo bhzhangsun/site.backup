@@ -19,7 +19,8 @@
 #
 # 幂等：可重复执行；
 #   - 检测到 /usr/sbin/nginx 二进制里有 ngx_quic_ssl 符号 → 跳过整段（真 QUIC）
-#   - 检测到 hg.nginx.org/quictls 假包（configure 有 with-http_v3_module 但没 ngx_quic_ssl）→ 提示并自编译
+#   - 检测到 apt 装的 nginx 1.30.3-1~bullseye 假包（configure 有 with-http_v3_module
+#     但二进制里没 ngx_quic_ssl，OpenSSL 1.1.1 编的）→ 打 [warn] 提示并自编译
 #   - OpenSSL 源码已就位跳过 git clone
 #   - 旧 apt 源 nginx 自动 purge（不动 /etc/sing-box/certs/、/etc/nginx/conf.d/、/var/www/）
 #
@@ -90,9 +91,10 @@ install_nginx() {
     >/dev/null
 
   # 3) 拉 OpenSSL 3.2+ 源码（quictls fork 已合并到 OpenSSL 主线 3.2+）
+  # -c advice.detachedHead=false：关掉 git 对 --depth 1 切到 tag 的 detached HEAD 警告
   if [[ ! -d "$OPENSSL_SRC" ]]; then
     echo "[info] 拉取 OpenSSL $OPENSSL_VERSION 源码..."
-    git clone --depth 1 --branch "openssl-$OPENSSL_VERSION" \
+    git -c advice.detachedHead=false clone --depth 1 --branch "openssl-$OPENSSL_VERSION" \
       https://github.com/openssl/openssl.git "$OPENSSL_SRC" >/dev/null
     echo "[ok] OpenSSL 源码已就位: $OPENSSL_SRC"
   else
@@ -126,7 +128,7 @@ install_nginx() {
       --lock-path=/var/run/nginx.lock \
       --with-http_v3_module \
       --with-openssl="$OPENSSL_SRC" \
-      --with-openssl-opt="enable-tls1.3 no-shared -DOPENSSL_NO_HEARTBEATS" \
+      --with-openssl-opt="no-shared" \
       --with-http_ssl_module \
       --with-http_v2_module \
       --with-http_stub_status_module \
