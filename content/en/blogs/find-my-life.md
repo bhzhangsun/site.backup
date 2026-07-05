@@ -1,6 +1,6 @@
 +++
 date = '2026-07-03T21:13:34+08:00'
-draft = true
+draft = false
 title = 'Find My Life'
 description = 'A short essay about beginnings — how a child met a beige computer and never quite left.'
 tags = ['Hugo', 'Life', 'Coding']
