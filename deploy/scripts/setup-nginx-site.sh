@@ -318,9 +318,17 @@ cat > "$HTTPS_CONF" <<EOF
 # nestseeker.xyz 真实 https 站点 (TCP 443) + h3 (UDP 443) 双栈
 # 浏览器直接访问 https://nestseeker.xyz/ 命中 TCP 443；同时响应 Alt-Svc 头引导升级到 h3
 # 同一端口 TCP+UDP 各走各的 socket，互不干扰
+#
+# listen 关键字说明（nginx 1.25+）：
+#   - listen 443 ssl         → TCP 443 (TLS + HTTP/2)
+#   - listen 443 quic reuseport → UDP 443 (QUIC + HTTP/3)
+# http2 on / http3 on 只是协议层开关，必须有对应的 quic 监听才会开 UDP socket；
+# 漏了 quic 关键字 = "ss -lnu" 看不到 :443，h3 永远不工作。
 server {
     listen 443 ssl;
     listen [::]:443 ssl;
+    listen 443 quic reuseport;
+    listen [::]:443 quic reuseport;
     http2 on;                       # nginx 1.25+ 推荐写法（替代 listen ... http2）
     http3 on;                       # 启用 HTTP/3 (nginx 1.25.0+，QUIC 监听同 :443 UDP)
 
@@ -373,10 +381,19 @@ fi
 
 # 探测端口监听
 for p in "$MASQ_PORT" "443"; do
-  if ss -lntu "sport = :$p" 2>/dev/null | grep -q LISTEN; then
-    echo "[ok] :$p 在监听 ($(ss -lntu "sport = :$p" 2>/dev/null | grep LISTEN | awk '{print $1}' | sort -u | tr '\n' ',' | sed 's/,$//'))"
+  # 拆开 tcp/udp 报告，让 QUIC udp 异常立刻可见
+  proto_listen=$(ss -lntuH "sport = :$p" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ',' | sed 's/,$//')
+  if [[ -n "$proto_listen" ]]; then
+    echo "[ok] :$p 在监听 ($proto_listen)"
   else
     echo "[warn] :$p 暂未在监听"
+  fi
+
+  # 443 必须 udp 也起（h3），否则 h3 不会工作
+  if [[ "$p" == "443" ]] && ! ss -lnuH "sport = :443" 2>/dev/null | grep -q .; then
+    echo "[warn] :443 UDP 未监听 → h3 不会工作"
+    echo "      可能：1) nginx listen 缺 quic 关键字（请重跑脚本更新 conf）"
+    echo "            2) VPS 防火墙/安全组挡入站 UDP:443（去 cloud panel 放行）"
   fi
 done
 
