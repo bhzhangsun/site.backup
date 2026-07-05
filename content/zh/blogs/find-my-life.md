@@ -1,6 +1,6 @@
 +++
 date = '2026-07-03T21:13:34+08:00'
-draft = true
+draft = false
 title = '找到我的人生'
 description = '一篇关于开始的短文——一个孩子与一台米色电脑相遇，从此再也没能真正离开。'
 tags = ['Hugo', '人生', '编程']
