@@ -24,7 +24,10 @@
 #   - OpenSSL 源码已就位跳过 git clone
 #   - 旧 apt 源 nginx 自动 purge（不动 /etc/sing-box/certs/、/etc/nginx/conf.d/、/var/www/）
 #
-# 用法：sudo ./setup-nginx-site.sh
+# 用法（本地）：sudo ./setup-nginx-site.sh
+# 用法（远程，GitHub raw CDN 有缓存，加 cb=$RANDOM 必 bust）：
+#   wget -qO- "https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/scripts/setup-nginx-site.sh?cb=$RANDOM" | sudo bash
+#
 # 可选环境变量：
 #   MASQ_PORT=80                                 # :80 HTTP 端口
 #   MASQ_DOC_ROOT=/var/www/nestseeker.xyz        # Hugo 站点根
@@ -92,6 +95,8 @@ install_nginx() {
 
   # 3) 拉 OpenSSL 3.2+ 源码（quictls fork 已合并到 OpenSSL 主线 3.2+）
   # -c advice.detachedHead=false：关掉 git 对 --depth 1 切到 tag 的 detached HEAD 警告
+  # 强制 rm -rf .openssl 残留：OpenSSL 3.x 构建中间目录；上次失败构建留的旧 Makefile/configdata.pm
+  #   会让本次 build 继续用残留选项（含 enable-tls1.3），必须清。
   if [[ ! -d "$OPENSSL_SRC" ]]; then
     echo "[info] 拉取 OpenSSL $OPENSSL_VERSION 源码..."
     git -c advice.detachedHead=false clone --depth 1 --branch "openssl-$OPENSSL_VERSION" \
@@ -100,6 +105,7 @@ install_nginx() {
   else
     echo "[ok] OpenSSL 源码已存在: $OPENSSL_SRC"
   fi
+  rm -rf "$OPENSSL_SRC/.openssl" "$OPENSSL_SRC/Makefile" "$OPENSSL_SRC/configdata.pm"
 
   # 4) 卸载旧 apt 装的 nginx（不带 QUIC；保留 /etc/sing-box/certs/、/etc/nginx/conf.d/ 不动）
   if dpkg -l nginx 2>/dev/null | grep -q '^ii'; then
@@ -112,6 +118,11 @@ install_nginx() {
 
   # 5) 编译 nginx $NGINX_VERSION（让 nginx 编译时自动 build OpenSSL 3.2+）
   # --with-openssl= 让 nginx 自己 build OpenSSL，比单独 build 少一步、链接更稳
+  # 不传 --with-openssl-opt：nginx 1.30.3 的 auto/lib/openssl/make 已硬编码
+  #   ./config --prefix=... no-shared no-threads $OPENSSL_OPT
+  # OPENSSL_OPT 是追加在最后，传 no-shared 跟硬编码重复；
+  # 传 -DOPENSSL_NO_HEARTBEATS / enable-tls1.3 在 OpenSSL 3.x 都是无效选项，
+  # 会让 build 直接报 "Unsupported options" 挂掉。留空让 nginx 用默认 no-shared no-threads。
   echo "[info] 编译 nginx $NGINX_VERSION + OpenSSL $OPENSSL_VERSION（首次约 5-10min）..."
   rm -rf "/tmp/nginx-$NGINX_VERSION"
   (cd /tmp && \
@@ -128,7 +139,6 @@ install_nginx() {
       --lock-path=/var/run/nginx.lock \
       --with-http_v3_module \
       --with-openssl="$OPENSSL_SRC" \
-      --with-openssl-opt="no-shared" \
       --with-http_ssl_module \
       --with-http_v2_module \
       --with-http_stub_status_module \
