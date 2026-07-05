@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 在 VPS 上以 root 权限执行：自编译 nginx 1.30.x + quictls（带 QUIC 支持），
+# 在 VPS 上以 root 权限执行：自编译 nginx 1.30.x + OpenSSL 3.2+（带 QUIC 支持），
 # 写 2 个 server block：
 #   :80   HTTP        Hugo 静态站（直接访问 + hy2 masq 目标；带 Alt-Svc 引导 h3）
 #   :443  HTTPS (TCP) + HTTP/3 (UDP)  nestseeker.xyz 真实 https + h3 双栈（同 listen 端口）
@@ -11,12 +11,17 @@
 #
 # 为什么自编译：
 #   Debian 11 (bullseye) 系统 OpenSSL 1.1.1 没 QUIC API；
-#   nginx.org 官方 mainline 包编自 OpenSSL 1.1.1，自动跳过 http_v3_module；
-#   所以必须自编译 nginx + quictls（OpenSSL 的 QUIC 分支，含 QUIC API）。
-#   Debian 12+ 系统 OpenSSL 3.0/3.5 可走 nginx.org 源，到时改 SKIP_NGINX_INSTALL=1 即可。
+#   nginx.org 官方 mainline 包编自 OpenSSL 1.1.1，configure 阶段自动跳过
+#   http_v3_module（参数保留在 nginx -V 输出里，但模块代码没编入二进制），
+#   "http3 on;" 指令被静默忽略，UDP :443 永远不起。
+#   必须自编译 nginx + OpenSSL 3.2+（quictls fork 已合并到 OpenSSL 主线 3.2+）。
+#   Debian 12+ 系统 OpenSSL 3.0/3.5 可走 apt 装 nginx-extras，到时改 SKIP_NGINX_INSTALL=1 即可。
 #
-# 幂等：可重复执行；检测到 nginx 已带 http_v3_module 跳过整个编译阶段；
-#       quictls 已编译也跳过；旧 apt 源 nginx 自动 purge（不动 conf.d/*.conf 和 cert）。
+# 幂等：可重复执行；
+#   - 检测到 /usr/sbin/nginx 二进制里有 ngx_quic_ssl 符号 → 跳过整段（真 QUIC）
+#   - 检测到 hg.nginx.org/quictls 假包（configure 有 with-http_v3_module 但没 ngx_quic_ssl）→ 提示并自编译
+#   - OpenSSL 源码已就位跳过 git clone
+#   - 旧 apt 源 nginx 自动 purge（不动 /etc/sing-box/certs/、/etc/nginx/conf.d/、/var/www/）
 #
 # 用法：sudo ./setup-nginx-site.sh
 # 可选环境变量：
@@ -25,7 +30,8 @@
 #   SITE_CERT_FULLCHAIN=/etc/sing-box/certs/nestseeker.xyz.fullchain.pem
 #   SITE_CERT_KEY=/etc/sing-box/certs/nestseeker.xyz.key.pem
 #   NGINX_VERSION=1.30.3                         # 编译用的 nginx 版本（升级时改这里）
-#   QUICTLS_PREFIX=/opt/quictls                 # quictls 安装路径
+#   OPENSSL_VERSION=3.2.1                        # 编译用的 OpenSSL 版本
+#   OPENSSL_SRC=/opt/openssl-src                 # OpenSSL 源码位置
 #   SKIP_NGINX_INSTALL=1                         # 跳过 nginx 安装/编译（已自编译好时用）
 
 set -euo pipefail
@@ -38,7 +44,8 @@ MASQ_DOC_ROOT="${MASQ_DOC_ROOT:-/var/www/nestseeker.xyz}"
 SITE_CERT_FULLCHAIN="${SITE_CERT_FULLCHAIN:-/etc/sing-box/certs/nestseeker.xyz.fullchain.pem}"
 SITE_CERT_KEY="${SITE_CERT_KEY:-/etc/sing-box/certs/nestseeker.xyz.key.pem}"
 NGINX_VERSION="${NGINX_VERSION:-1.30.3}"
-QUICTLS_PREFIX="${QUICTLS_PREFIX:-/opt/quictls}"
+OPENSSL_VERSION="${OPENSSL_VERSION:-3.2.1}"
+OPENSSL_SRC="${OPENSSL_SRC:-/opt/openssl-src}"
 SKIP_NGINX_INSTALL="${SKIP_NGINX_INSTALL:-0}"
 
 NGINX_CONF_DIR="/etc/nginx/conf.d"
@@ -50,46 +57,46 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-# === 1. 自编译 nginx + quictls（带 QUIC 支持）===
-# 检测：已带 http_v3_module 的 nginx 直接跳过整段（幂等）
-# 流程：装编译依赖 → 编译 quictls → 卸旧 apt nginx → 编译 nginx → 写 systemd service
+# === 1. 自编译 nginx + OpenSSL 3.2+（带 QUIC 支持）===
+# 检测：二进制里有 ngx_quic_ssl 符号 → 跳过（真 QUIC）
+# 流程：装编译依赖 → 拉 OpenSSL 源码 → 卸旧 apt nginx → 编译 nginx（自动 build OpenSSL）→ 写 systemd service
 install_nginx() {
-  # 1) 已有 nginx 且是用 quictls 编译的 → 跳过（真 QUIC）
+  # 1) 已有 nginx 且二进制里有 ngx_quic_ssl 符号 → 跳过（真 QUIC）
   # 不能用 "with-http_v3_module" 判断：apt 装的 nginx 1.30.3-1~bullseye
-  #   configure 参数里有这个标志但实际没编（OpenSSL 1.1.1 没 QUIC API，模块被跳过）。
-  #   二进制 strings | grep "ngx_quic_ssl" 也是 0。需要看 cc-opt 有没有 /opt/quictls/include。
-  if command -v nginx >/dev/null 2>&1 && nginx -V 2>&1 | grep -q "/opt/quictls/include"; then
+  #   configure 参数里有这个标志但实际没编（OpenSSL 1.1.1 没 QUIC API，模块被跳过），
+  #   二进制里根本没有 ngx_quic_ssl 符号。"ngx_quic_ssl" 是 nginx quic 模块的 C 符号，
+  #   OpenSSL 1.1.1 编的 nginx 永远不会出现这个符号——这是金标准。
+  if command -v nginx >/dev/null 2>&1 && strings /usr/sbin/nginx 2>/dev/null | grep -q "ngx_quic_ssl"; then
     local v
     v=$(nginx -v 2>&1 | awk -F/ '{print $2}')
-    echo "[ok] nginx $v 已用 quictls 编译（真 QUIC），跳过编译"
+    echo "[ok] nginx $v 已编入 QUIC 模块（ngx_quic_ssl 符号在），跳过编译"
     return
   fi
   if command -v nginx >/dev/null 2>&1 && nginx -V 2>&1 | grep -q "with-http_v3_module"; then
     echo "[warn] 检测到 nginx 1.30.3-1~bullseye（nginx.org 源，OpenSSL 1.1.1 编出假 QUIC），将卸载并自编译"
   fi
 
-  echo "[info] 准备编译环境（依赖 + quictls + nginx $NGINX_VERSION）..."
+  echo "[info] 准备编译环境（依赖 + OpenSSL $OPENSSL_VERSION + nginx $NGINX_VERSION）..."
 
   # 2) 装编译依赖
+  # - git：拉 OpenSSL 3.2+ 源码（hg.nginx.org 2024 年已废弃）
+  # - perl + perl-modules-5.32：OpenSSL configure 阶段必用
   apt-get update -y >/dev/null
   apt-get install -y --no-install-recommends \
-    build-essential wget curl ca-certificates \
-    libpcre3-dev zlib1g-dev libssl-dev mercurial \
+    build-essential wget curl ca-certificates git \
+    libpcre3-dev zlib1g-dev libssl-dev \
     libxml2-dev libxslt1-dev libgd-dev libgeoip-dev \
+    perl perl-modules-5.32 \
     >/dev/null
 
-  # 3) 编译 quictls（带 QUIC API 的 OpenSSL 分支；Debian 11 系统 OpenSSL 1.1.1 不支持 QUIC）
-  if [[ ! -f "$QUICTLS_PREFIX/lib/libssl.so" ]]; then
-    echo "[info] 编译 quictls（OpenSSL QUIC 分支）..."
-    rm -rf /tmp/quictls
-    hg clone -b quic https://hg.nginx.org/quictls /tmp/quictls >/dev/null
-    (cd /tmp/quictls && \
-      ./config --prefix="$QUICTLS_PREFIX" enable-tls1.3 no-shared >/dev/null && \
-      make -j"$(nproc)" >/dev/null && \
-      make install >/dev/null)
-    echo "[ok] quictls 已编译 → $QUICTLS_PREFIX"
+  # 3) 拉 OpenSSL 3.2+ 源码（quictls fork 已合并到 OpenSSL 主线 3.2+）
+  if [[ ! -d "$OPENSSL_SRC" ]]; then
+    echo "[info] 拉取 OpenSSL $OPENSSL_VERSION 源码..."
+    git clone --depth 1 --branch "openssl-$OPENSSL_VERSION" \
+      https://github.com/openssl/openssl.git "$OPENSSL_SRC" >/dev/null
+    echo "[ok] OpenSSL 源码已就位: $OPENSSL_SRC"
   else
-    echo "[ok] quictls 已存在: $QUICTLS_PREFIX"
+    echo "[ok] OpenSSL 源码已存在: $OPENSSL_SRC"
   fi
 
   # 4) 卸载旧 apt 装的 nginx（不带 QUIC；保留 /etc/sing-box/certs/、/etc/nginx/conf.d/ 不动）
@@ -101,8 +108,9 @@ install_nginx() {
     apt-get update -y >/dev/null
   fi
 
-  # 5) 编译 nginx $NGINX_VERSION（用 quictls）
-  echo "[info] 编译 nginx $NGINX_VERSION + quictls（首次约 5-10min）..."
+  # 5) 编译 nginx $NGINX_VERSION（让 nginx 编译时自动 build OpenSSL 3.2+）
+  # --with-openssl= 让 nginx 自己 build OpenSSL，比单独 build 少一步、链接更稳
+  echo "[info] 编译 nginx $NGINX_VERSION + OpenSSL $OPENSSL_VERSION（首次约 5-10min）..."
   rm -rf "/tmp/nginx-$NGINX_VERSION"
   (cd /tmp && \
     wget -q "https://nginx.org/download/nginx-$NGINX_VERSION.tar.gz" && \
@@ -117,8 +125,8 @@ install_nginx() {
       --pid-path=/var/run/nginx.pid \
       --lock-path=/var/run/nginx.lock \
       --with-http_v3_module \
-      --with-cc-opt="-I${QUICTLS_PREFIX}/include" \
-      --with-ld-opt="-L${QUICTLS_PREFIX}/lib -Wl,-rpath,${QUICTLS_PREFIX}/lib" \
+      --with-openssl="$OPENSSL_SRC" \
+      --with-openssl-opt="enable-tls1.3 no-shared -DOPENSSL_NO_HEARTBEATS" \
       --with-http_ssl_module \
       --with-http_v2_module \
       --with-http_stub_status_module \
