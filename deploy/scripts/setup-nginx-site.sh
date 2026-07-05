@@ -54,12 +54,18 @@ fi
 # 检测：已带 http_v3_module 的 nginx 直接跳过整段（幂等）
 # 流程：装编译依赖 → 编译 quictls → 卸旧 apt nginx → 编译 nginx → 写 systemd service
 install_nginx() {
-  # 1) 已有 nginx 且带 QUIC 支持 → 跳过
-  if command -v nginx >/dev/null 2>&1 && nginx -V 2>&1 | grep -q "with-http_v3_module"; then
+  # 1) 已有 nginx 且是用 quictls 编译的 → 跳过（真 QUIC）
+  # 不能用 "with-http_v3_module" 判断：apt 装的 nginx 1.30.3-1~bullseye
+  #   configure 参数里有这个标志但实际没编（OpenSSL 1.1.1 没 QUIC API，模块被跳过）。
+  #   二进制 strings | grep "ngx_quic_ssl" 也是 0。需要看 cc-opt 有没有 /opt/quictls/include。
+  if command -v nginx >/dev/null 2>&1 && nginx -V 2>&1 | grep -q "/opt/quictls/include"; then
     local v
     v=$(nginx -v 2>&1 | awk -F/ '{print $2}')
-    echo "[ok] nginx $v 已带 QUIC 支持，跳过编译"
+    echo "[ok] nginx $v 已用 quictls 编译（真 QUIC），跳过编译"
     return
+  fi
+  if command -v nginx >/dev/null 2>&1 && nginx -V 2>&1 | grep -q "with-http_v3_module"; then
+    echo "[warn] 检测到 nginx 1.30.3-1~bullseye（nginx.org 源，OpenSSL 1.1.1 编出假 QUIC），将卸载并自编译"
   fi
 
   echo "[info] 准备编译环境（依赖 + quictls + nginx $NGINX_VERSION）..."
