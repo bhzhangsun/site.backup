@@ -11,7 +11,7 @@ deploy/
 └── scripts/
     ├── setup-deploy-user.sh   # ① 创建 deploy 用户 + SSH 公钥 + sudo 免密
     ├── setup-nginx-site.sh    # ② nginx mainline + :80 HTTP + :8443 TCP/UDP 双栈
-    └── setup-singbox.sh       # ③ sing-box 1.11+ + Reality/HY2 共用 443
+    └── setup-singbox.sh       # ③ sing-box 1.11+ + trojan reality :443 + vless reality :1443 + hy2 UDP:443
 ```
 
 ## 执行顺序
@@ -34,6 +34,30 @@ deploy/
    ▼
 [完] 客户端用脚本末尾打印的配置连接
 ```
+
+## 端口分配
+
+| 端口 | 协议 | 服务 | 用途 |
+|---|---|---|---|
+| `:80`    | TCP    | nginx              | Hugo 静态站（直接访问 + hy2 masq 探测者伪装目标） |
+| `:443`   | TCP    | sing-box **trojan** + reality | 代理客户端 + fallback_for_alpn → :8443；裸探测者无 ALPN → reality 透明转发 dest |
+| `:443`   | UDP    | sing-box **hy2**   | 代理客户端；非 hy2 客户端 → masq → :80 |
+| `:1443`  | TCP    | sing-box **vless** + reality | 备用入口，无 fallback；短 ID 错 → reality 透明转发 dest（反探测稍强） |
+| `:8443`  | TCP    | nginx (h2)         | trojan reality fallback 目标 + Alt-Svc 头（引导浏览器升 h3） |
+| `:8443`  | UDP    | nginx (h3)         | 浏览器 Alt-Svc 升级后的 h3 目标 |
+
+**关键路由**：
+- 浏览器 `https://nestseeker.xyz/` → TCP 443 trojan → fallback_for_alpn → TCP 8443 nginx h2 → 响应带 `Alt-Svc: h3=":8443"`
+- 浏览器第二次访问 → happy-eyeballs 升级到 UDP 8443 nginx h3（**绕开 sing-box**）
+- 裸探测者（无 ALPN）→ trojan 不命中 fallback_for_alpn → reality 透明转发到真实 dest:443（反探测保留）
+- 探测者 SNI=tesla.com → reality 透明转发到真实 tesla.com:443（vless/trojan 共享此行为）
+- 备用入口：客户端连 `vps:1443` 走 vless+reality（无 fallback 暴露面，更"沉默"）
+
+**为什么 trojan 与 vless 不都放 443**：
+- sing-box 不支持两个 inbound 同时 listen 同一端口（`bind: address already in use`）
+- 只能让 trojan 占 :443（带 fallback 满足浏览器需求），vless 让到 :1443（备用）
+
+**Trojan 客户端必须 ALPN=空**：配 ALPN=h2/http1.1 会被 `fallback_for_alpn` 截到 nginx，永远进不了 trojan 协议。
 
 ## 各脚本职责与边界
 
@@ -136,7 +160,8 @@ wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/s
 ```
 
 **脚本末尾会打印客户端配置**，包含：
-- Reality: `uuid` / `publicKey` / `shortId` / SNI（TCP:443）
+- Reality Trojan: `password`(=UUID) / `publicKey` / `shortId` / SNI（TCP:443，主入口）
+- Reality Vless: `uuid` / `publicKey` / `shortId` / SNI（TCP:1443，备用入口）
 - HY2: `password` / SNI（UDP:443）
 
 **本地验证**：
@@ -144,7 +169,7 @@ wget -qO- https://raw.githubusercontent.com/bhzhangsun/site.backup/main/deploy/s
 ```bash
 sing-box check -c /etc/sing-box/config.json
 systemctl status sing-box
-ss -lntu | grep ':443'   # 应看到一条 tcp (reality) + 一条 udp (hy2) 都 LISTEN
+ss -lntu | grep -E ':(443|1443)\s'   # 应看到 :443 tcp (trojan) + :443 udp (hy2) + :1443 tcp (vless) 都 LISTEN
 ```
 
 ### 4. 客户端连接
@@ -152,11 +177,20 @@ ss -lntu | grep ':443'   # 应看到一条 tcp (reality) + 一条 udp (hy2) 都 
 脚本 ③ 跑完会打印形如下面的配置（每台 VPS 密钥不同）：
 
 ```ini
-[Reality]
-type=vless, port=443
-uuid=<...>
+[Reality Trojan - 主入口]
+type=trojan, port=443
+password=<UUID>
+serverName=www.tesla.com
+publicKey=<...>
+shortId=<...>
+network=tcp
+# ⚠️ 客户端不要配 ALPN
+
+[Reality Vless - 备用入口]
+type=vless, port=1443
+uuid=<UUID>
 flow=xtls-rprx-vision
-serverName=nestseeker.xyz
+serverName=www.tesla.com
 publicKey=<...>
 shortId=<...>
 network=tcp
@@ -169,6 +203,10 @@ insecure=true
 ```
 
 > Reality 客户端必须跳过 cert 验证（v2rayN/Nekoray/Shadowrocket 等都默认如此）。
+>
+> **Trojan 客户端不要配 ALPN**：ALPN=h2/http1.1 会被 `fallback_for_alpn` 截到 nginx，永远进不了 trojan 协议层。
+>
+> **Vless 备用入口的端口是 1443 不是 443**（sing-box 同端口只能一个 inbound listen）。
 
 ## 密钥与配置存放位置
 
