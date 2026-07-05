@@ -10,7 +10,7 @@ deploy/
 ├── known_hosts             # SSH 主机指纹
 └── scripts/
     ├── setup-deploy-user.sh   # ① 创建 deploy 用户 + SSH 公钥 + sudo 免密
-    ├── setup-nginx-site.sh    # ② nginx mainline + :80 HTTP + :443 TCP/UDP (h2 + h3 共 listen)
+    ├── setup-nginx-site.sh    # ② 自编译 nginx + quictls + :80 HTTP + :443 TCP/UDP (h2 + h3 共 listen)
     └── setup-singbox.sh       # ③ sing-box 1.11+ + trojan reality :2053 + vless reality :1443 + hy2 UDP:8443
 ```
 
@@ -24,7 +24,7 @@ deploy/
    │
    ▼
 ② setup-nginx-site.sh
-   │  装 nginx mainline、写 :80 HTTP + :443 TCP+UDP (h2 + h3 同 server block)
+   │  自编译 nginx + quictls（带 QUIC 支持；Debian 11 系统 OpenSSL 1.1.1 走 apt 装不出 QUIC，必须自编译）
    │  （:80 = 直访 + hy2 masq；:443 TCP = 标准 https 站点；:443 UDP = h3 升级目标；Alt-Svc 头无端口写法 h3=":443"）
    │  :443 缺 cert 时脚本内 openssl 自签兜底（CN/SAN=nestseeker.xyz，10 年）
    │  跑通后用 acme.sh 申请真实 cert，直接覆盖脚本 env 指定的路径即可

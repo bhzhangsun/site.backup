@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
-# 在 VPS 上以 root 权限执行：装 nginx 1.27+（nginx.org 源），
-# 写 3 个 server block：
+# 在 VPS 上以 root 权限执行：自编译 nginx 1.30.x + quictls（带 QUIC 支持），
+# 写 2 个 server block：
 #   :80   HTTP        Hugo 静态站（直接访问 + hy2 masq 目标；带 Alt-Svc 引导 h3）
-#   :443  HTTPS (TCP) nestseeker.xyz 真实 https 站点（h2/h1.1）+ Alt-Svc 源
-#   :443  HTTP/3 (UDP) Alt-Svc 升级后的 h3 目标（QUIC，跟 443 TCP 共享 cert 和 listen）
+#   :443  HTTPS (TCP) + HTTP/3 (UDP)  nestseeker.xyz 真实 https + h3 双栈（同 listen 端口）
 # 端口分配原因：
 #   - 443 TCP/UDP 整组给 nginx：TCP = https，UDP = h3，跟主流部署一致（Cloudflare/Caddy/LiteSpeed）
 #   - 443 UDP 不再归 sing-box HY2（HY2 改 8443 UDP 错开），Alt-Svc 用无端口写法 h3=":443"
 #   - cert 路径对齐 acme.sh --install-cert 默认输出，跑通后真实 cert 直接覆盖
 # 配置全部走 /etc/nginx/conf.d/，不污染主配置。
-# 幂等：可重复执行；旧 conf（masq-site-*.conf / masq-fallback-*.conf / site-h3-8443.conf）在每次重跑时自动清理。
+#
+# 为什么自编译：
+#   Debian 11 (bullseye) 系统 OpenSSL 1.1.1 没 QUIC API；
+#   nginx.org 官方 mainline 包编自 OpenSSL 1.1.1，自动跳过 http_v3_module；
+#   所以必须自编译 nginx + quictls（OpenSSL 的 QUIC 分支，含 QUIC API）。
+#   Debian 12+ 系统 OpenSSL 3.0/3.5 可走 nginx.org 源，到时改 SKIP_NGINX_INSTALL=1 即可。
+#
+# 幂等：可重复执行；检测到 nginx 已带 http_v3_module 跳过整个编译阶段；
+#       quictls 已编译也跳过；旧 apt 源 nginx 自动 purge（不动 conf.d/*.conf 和 cert）。
 #
 # 用法：sudo ./setup-nginx-site.sh
 # 可选环境变量：
@@ -17,7 +24,9 @@
 #   MASQ_DOC_ROOT=/var/www/nestseeker.xyz        # Hugo 站点根
 #   SITE_CERT_FULLCHAIN=/etc/sing-box/certs/nestseeker.xyz.fullchain.pem
 #   SITE_CERT_KEY=/etc/sing-box/certs/nestseeker.xyz.key.pem
-#   SKIP_NGINX_INSTALL=1                         # 已装好 nginx 1.27+ 时跳过安装
+#   NGINX_VERSION=1.30.3                         # 编译用的 nginx 版本（升级时改这里）
+#   QUICTLS_PREFIX=/opt/quictls                 # quictls 安装路径
+#   SKIP_NGINX_INSTALL=1                         # 跳过 nginx 安装/编译（已自编译好时用）
 
 set -euo pipefail
 
@@ -28,6 +37,8 @@ MASQ_DOC_ROOT="${MASQ_DOC_ROOT:-/var/www/nestseeker.xyz}"
 # 路径对齐 acme.sh --install-cert 的 --fullchain-file / --key-file 默认输出位置
 SITE_CERT_FULLCHAIN="${SITE_CERT_FULLCHAIN:-/etc/sing-box/certs/nestseeker.xyz.fullchain.pem}"
 SITE_CERT_KEY="${SITE_CERT_KEY:-/etc/sing-box/certs/nestseeker.xyz.key.pem}"
+NGINX_VERSION="${NGINX_VERSION:-1.30.3}"
+QUICTLS_PREFIX="${QUICTLS_PREFIX:-/opt/quictls}"
 SKIP_NGINX_INSTALL="${SKIP_NGINX_INSTALL:-0}"
 
 NGINX_CONF_DIR="/etc/nginx/conf.d"
@@ -39,51 +50,106 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-# === 1. 装 nginx 1.31.x（nginx.org 源） ===
+# === 1. 自编译 nginx + quictls（带 QUIC 支持）===
+# 检测：已带 http_v3_module 的 nginx 直接跳过整段（幂等）
+# 流程：装编译依赖 → 编译 quictls → 卸旧 apt nginx → 编译 nginx → 写 systemd service
 install_nginx() {
-  if command -v nginx >/dev/null 2>&1; then
+  # 1) 已有 nginx 且带 QUIC 支持 → 跳过
+  if command -v nginx >/dev/null 2>&1 && nginx -V 2>&1 | grep -q "with-http_v3_module"; then
     local v
-    v=$(nginx -v 2>&1 | awk -F/ '{print $2}' | cut -d. -f1,2)
-    # 1.27+ 都是 mainline，足够新；这里只检查"不是太旧"
-    if awk -v cur="$v" 'BEGIN { split(cur, a, "."); exit !(a[1] >= 1 && a[2] >= 27) }'; then
-      echo "[ok] nginx $v.x 已安装，跳过"
-      return
-    fi
-    echo "[warn] 当前 nginx $v.x 版本偏旧，将升级到 mainline"
+    v=$(nginx -v 2>&1 | awk -F/ '{print $2}')
+    echo "[ok] nginx $v 已带 QUIC 支持，跳过编译"
+    return
   fi
 
-  echo "[info] 装 nginx mainline（nginx.org 源）..."
+  echo "[info] 准备编译环境（依赖 + quictls + nginx $NGINX_VERSION）..."
 
+  # 2) 装编译依赖
   apt-get update -y >/dev/null
   apt-get install -y --no-install-recommends \
-    curl gnupg2 ca-certificates lsb-release openssl >/dev/null
+    build-essential wget curl ca-certificates \
+    libpcre3-dev zlib1g-dev libssl-dev mercurial \
+    libxml2-dev libxslt1-dev libgd-dev libgeoip-dev \
+    >/dev/null
 
-  local CODENAME
-  CODENAME=$(lsb_release -cs)
+  # 3) 编译 quictls（带 QUIC API 的 OpenSSL 分支；Debian 11 系统 OpenSSL 1.1.1 不支持 QUIC）
+  if [[ ! -f "$QUICTLS_PREFIX/lib/libssl.so" ]]; then
+    echo "[info] 编译 quictls（OpenSSL QUIC 分支）..."
+    rm -rf /tmp/quictls
+    hg clone -b quic https://hg.nginx.org/quictls /tmp/quictls >/dev/null
+    (cd /tmp/quictls && \
+      ./config --prefix="$QUICTLS_PREFIX" enable-tls1.3 no-shared >/dev/null && \
+      make -j"$(nproc)" >/dev/null && \
+      make install >/dev/null)
+    echo "[ok] quictls 已编译 → $QUICTLS_PREFIX"
+  else
+    echo "[ok] quictls 已存在: $QUICTLS_PREFIX"
+  fi
 
-  # 加 nginx.org 源
-  curl -fsSL https://nginx.org/keys/nginx_signing.key \
-    | gpg --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg
+  # 4) 卸载旧 apt 装的 nginx（不带 QUIC；保留 /etc/sing-box/certs/、/etc/nginx/conf.d/ 不动）
+  if dpkg -l nginx 2>/dev/null | grep -q '^ii'; then
+    echo "[info] 卸载旧 apt 装的 nginx（不带 QUIC）..."
+    systemctl stop nginx 2>/dev/null || true
+    apt-get purge -y nginx nginx-common >/dev/null
+    rm -f /etc/apt/sources.list.d/nginx.list /etc/apt/preferences.d/99nginx
+    apt-get update -y >/dev/null
+  fi
 
-  echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] \
-http://nginx.org/packages/debian $CODENAME nginx" \
-    > /etc/apt/sources.list.d/nginx.list
+  # 5) 编译 nginx $NGINX_VERSION（用 quictls）
+  echo "[info] 编译 nginx $NGINX_VERSION + quictls（首次约 5-10min）..."
+  rm -rf "/tmp/nginx-$NGINX_VERSION"
+  (cd /tmp && \
+    wget -q "https://nginx.org/download/nginx-$NGINX_VERSION.tar.gz" && \
+    tar xzf "nginx-$NGINX_VERSION.tar.gz" && \
+    cd "nginx-$NGINX_VERSION" && \
+    ./configure \
+      --prefix=/etc/nginx \
+      --sbin-path=/usr/sbin/nginx \
+      --conf-path=/etc/nginx/nginx.conf \
+      --error-log-path=/var/log/nginx/error.log \
+      --http-log-path=/var/log/nginx/access.log \
+      --pid-path=/var/run/nginx.pid \
+      --lock-path=/var/run/nginx.lock \
+      --with-http_v3_module \
+      --with-cc-opt="-I${QUICTLS_PREFIX}/include" \
+      --with-ld-opt="-L${QUICTLS_PREFIX}/lib -Wl,-rpath,${QUICTLS_PREFIX}/lib" \
+      --with-http_ssl_module \
+      --with-http_v2_module \
+      --with-http_stub_status_module \
+      --with-http_realip_module \
+      >/dev/null && \
+    make -j"$(nproc)" >/dev/null && \
+    make install >/dev/null)
 
-  # 锁定 nginx.org 源（防止被 Debian 官方源冲掉）
-  cat > /etc/apt/preferences.d/99nginx <<'EOF'
-Package: *
-Pin: origin nginx.org
-Pin-Priority: 900
+  echo "[ok] nginx $NGINX_VERSION 已编译: $(nginx -v 2>&1)"
+
+  # 6) 写 systemd service（apt 卸载会带掉，自己补一份）
+  if [[ ! -f /lib/systemd/system/nginx.service ]] && [[ ! -f /etc/systemd/system/nginx.service ]]; then
+    cat > /lib/systemd/system/nginx.service <<'EOF'
+[Unit]
+Description=nginx - high performance web server
+Documentation=http://nginx.org/en/docs/
+After=network.target nss-lookup.target
+
+[Service]
+Type=forking
+PIDFile=/var/run/nginx.pid
+ExecStartPre=/usr/sbin/nginx -t
+ExecStart=/usr/sbin/nginx
+ExecReload=/bin/kill -s HUP $MAINPID
+ExecStop=/bin/kill -s QUIT $MAINPID
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
 EOF
-
-  apt-get update -y >/dev/null
-  apt-get install -y --no-install-recommends nginx >/dev/null
-
-  echo "[ok] 已安装 $(nginx -v 2>&1)"
+    systemctl daemon-reload
+    echo "[ok] 已写入 /lib/systemd/system/nginx.service"
+  fi
 }
 
 if [[ "$SKIP_NGINX_INSTALL" == "1" ]]; then
-  echo "[ok] SKIP_NGINX_INSTALL=1，跳过 nginx 安装"
+  echo "[ok] SKIP_NGINX_INSTALL=1，跳过 nginx 安装/编译"
 else
   install_nginx
 fi
