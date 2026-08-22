@@ -1,5 +1,6 @@
 +++
 date = '2026-07-14T22:00:00+08:00'
+lastmod = '2026-07-14T22:00:00+08:00'
 draft = false
 title = 'On the Collective Sexual Repression of Young People'
 description = 'Sexual repression is not the problem of any one person or any one gender. It is the result of layered structural collapse in the social relations of our era.'

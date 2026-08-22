@@ -3,9 +3,19 @@ languageCode = 'en-us'
 title = 'Diogo Ferro - Portfolio & Blog'
 theme = 'hugo-noir' # This is the theme you are using
 
-# URL handling
-relativeURLs = true
+# URL handling — 绝对 URL 对 SEO 必要
+relativeURLs = false
 canonifyURLs = true
+
+# SEO: sitemap
+[sitemap]
+  changefreq = "weekly"
+  filename = "sitemap.xml"
+  priority = 0.5
+
+# SEO: Hugo 自动生成 robots.txt（如果 static/robots.txt 不存在）
+[params.seo]
+  enable = true
 
 # Multilingual configuration
 # If you want to use multiple languages, uncomment and configure the [languages] section below.

@@ -1,5 +1,6 @@
 +++
 date = '2026-07-03T21:13:34+08:00'
+lastmod = '2026-07-03T21:13:34+08:00'
 draft = false
 title = 'Find My Life'
 description = 'A short essay about beginnings — how a child met a beige computer and never quite left.'
