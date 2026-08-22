@@ -7,3 +7,13 @@ content = """
 There is no straight line to a life you love. It began with a sound — the click of a mechanical keyboard in a small, dimly lit room — and the quiet realization that the world in front of me was the one I had been looking for all along.
 """
 link = "/en/blogs/find-my-life/"
+
+[[blogs]]
+title = "On the Collective Sexual Repression of Young People"
+date = "2026-07-14"
+summary = "Sexual repression is not the problem of any one person or any one gender. It is the result of layered structural collapse in the social relations of our era."
+tags = ["Social Observation", "Sexual Repression", "Modernity", "Youth"]
+content = """
+To understand the collective sexual repression of today's youth, we must first understand the social structure we grew up in. From compressed modernity to the loss of social skills, to the impact of Western liberal culture — the cost of sex ultimately points to the mismatch of sexual resources in an atomized era.
+"""
+link = "/en/blogs/collective-sexual-repression/"
