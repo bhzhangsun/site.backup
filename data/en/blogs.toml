@@ -17,3 +17,13 @@ content = """
 To understand the collective sexual repression of today's youth, we must first understand the social structure we grew up in. From compressed modernity to the loss of social skills, to the impact of Western liberal culture — the cost of sex ultimately points to the mismatch of sexual resources in an atomized era.
 """
 link = "/en/blogs/collective-sexual-repression/"
+
+[[blogs]]
+title = "Trust and Boundary: A Developer's Survival Criteria in the AI Era"
+date = "2026-10-10"
+summary = "When writing code approaches zero cost, what becomes scarce is not code but understanding, debuggability, and boundary. A long read on where developers should go."
+tags = ["AI", "Software Engineering", "Career", "Systems Thinking", "Frontend"]
+content = """
+Writing code got cheap. What got expensive? And for anyone who intends to stay in this industry, what is the criterion now? My answer: did you define the interfaces on this system, and when it breaks, are you the one who goes and finds out.
+"""
+link = "/en/blogs/trust-and-boundary/"
