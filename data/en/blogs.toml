@@ -1,4 +1,14 @@
 [[blogs]]
+title = "Writing WiFi to an NFC Tag: the So-Called Non-Standard Layout Was the WFA Standard"
+date = "2026-10-15"
+summary = "The so-called non-standard bytes are the WFA WSC Configuration Token. OTA messages and NFC tokens use different attribute ID sets, so the wrong form only triggers an open-with dialog."
+tags = ["NFC", "Flutter", "WiFi", "WSC", "Android"]
+content = """
+A NFC WiFi tag pitfall: the OTA-shaped WSC message will not connect on HyperOS, but the token shape written by NFC Tools will. The root cause is two attribute ID systems; the parser must read the same number by its scope.
+"""
+link = "/blogs/nfc-wifi-wsc-token/"
+
+[[blogs]]
 title = "Find My Life"
 date = "2026-07-03"
 summary = "A short essay about beginnings — how a child met a beige computer and never quite left."

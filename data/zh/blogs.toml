@@ -1,4 +1,14 @@
 [[blogs]]
+title = "碰一下连 WiFi：所谓非标准布局，其实是 WFA WSC 标准"
+date = "2026-10-15"
+summary = "所谓非标准布局，其实是 WFA WSC 的 NFC 配置令牌标准。OTA 消息与 NFC 令牌用的是两套属性 ID，用错形态手机只弹选应用。"
+tags = ["NFC", "Flutter", "WiFi", "WSC", "Android"]
+content = """
+写 NFC WiFi 标签踩的坑：OTA 形态的 WSC 消息在 HyperOS 上连不上，NFC Tools 写的令牌形态才能连。根因是两套属性 ID 体系，解析器必须按作用域解读同一个编号。
+"""
+link = "/zh/blogs/nfc-wifi-wsc-token/"
+
+[[blogs]]
 title = "找到我的人生"
 date = "2026-07-03"
 summary = "一篇关于开始的短文——一个孩子与一台米色电脑相遇，从此再也没能真正离开。"
